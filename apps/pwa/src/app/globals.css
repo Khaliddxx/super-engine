@@ -1,0 +1,74 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Cormorant+Garamond:wght@500;600&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body {
+  height: 100%;
+  background: #0b0d10;
+  color: #f1f2f4;
+  -webkit-font-smoothing: antialiased;
+  font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
+  overscroll-behavior-y: contain;
+}
+
+body {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Thin scrollbars on desktop */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-thumb {
+  background: #252b33;
+  border-radius: 3px;
+}
+
+@layer components {
+  .card {
+    @apply bg-surface border border-border rounded-2xl;
+  }
+  .pill {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium uppercase tracking-wide;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-medium text-sm transition-colors;
+  }
+  .btn-primary {
+    @apply btn bg-accent text-black hover:bg-[#c89a46];
+  }
+  .btn-secondary {
+    @apply btn bg-surface2 text-fg border border-border hover:bg-border;
+  }
+  .btn-danger {
+    @apply btn bg-surface2 text-danger border border-border hover:bg-border;
+  }
+  .input {
+    @apply w-full bg-surface2 border border-border rounded-xl px-4 py-3 text-fg placeholder-muted focus:outline-none focus:border-accent/60;
+  }
+  .tabbar-btn {
+    @apply flex-1 flex flex-col items-center justify-center gap-0.5 text-[11px] text-muted py-2;
+  }
+  .tabbar-btn.active {
+    @apply text-fg;
+  }
+  .tabbar-btn.active svg {
+    @apply text-accent;
+  }
+}
+
+/* Phone safe areas */
+.safe-bottom {
+  padding-bottom: max(env(safe-area-inset-bottom), 12px);
+}
+.safe-top {
+  padding-top: max(env(safe-area-inset-top), 12px);
+}

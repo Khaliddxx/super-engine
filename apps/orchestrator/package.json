@@ -1,0 +1,42 @@
+{
+  "name": "@super-engine/orchestrator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/server.ts",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "build": "echo skip",
+    "typecheck": "tsc --noEmit",
+    "seed": "tsx src/scripts/seed.ts",
+    "scan": "tsx src/scripts/scan.ts",
+    "run-cycle": "tsx src/scripts/run-cycle.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.91.1",
+    "@super-engine/db": "workspace:*",
+    "@super-engine/prompts": "workspace:*",
+    "@super-engine/schemas": "workspace:*",
+    "bullmq": "^5.34.5",
+    "dotenv": "^16.4.7",
+    "fastify": "^5.2.1",
+    "@fastify/cors": "^10.0.2",
+    "@fastify/jwt": "^9.0.3",
+    "ioredis": "^5.4.2",
+    "jsonwebtoken": "^9.0.2",
+    "node-cron": "^3.0.3",
+    "pino": "^9.6.0",
+    "pino-pretty": "^13.0.0",
+    "tz-lookup": "^6.1.25",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/jsonwebtoken": "^9.0.7",
+    "@types/node": "^22.10.5",
+    "@types/node-cron": "^3.0.11",
+    "@types/tz-lookup": "^6.1.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

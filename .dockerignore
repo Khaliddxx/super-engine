@@ -1,0 +1,15 @@
+node_modules
+**/node_modules
+.pnpm-store
+.next
+**/.next
+apps/pwa
+.env
+.env.*
+.git
+.railway
+.vercel
+dist
+**/dist
+coverage
+spec

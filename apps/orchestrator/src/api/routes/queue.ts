@@ -1,0 +1,198 @@
+import type { FastifyInstance, FastifyPluginOptions } from "fastify";
+import {
+  and,
+  desc,
+  eq,
+  type DbClient,
+  triage,
+  prospects,
+  messages,
+  threads,
+} from "@super-engine/db";
+import { requireAuth } from "../auth-guard.js";
+import { sendChatMessage, startChat } from "../../integrations/unipile.js";
+import { env } from "../../lib/env.js";
+import { transition } from "../../modules/transitions.js";
+import { notify } from "../../integrations/slack.js";
+
+interface Opts extends FastifyPluginOptions {
+  db: () => DbClient;
+}
+
+const priorityRank: Record<string, number> = { high: 0, medium: 1, low: 2 };
+
+export async function queueRoutes(app: FastifyInstance, opts: Opts): Promise<void> {
+  app.addHook("onRequest", requireAuth);
+
+  // List pending triage cards
+  app.get("/", async () => {
+    const db = opts.db();
+    const rows = await db
+      .select({
+        id: triage.id,
+        status: triage.status,
+        kind: triage.kind,
+        classification: triage.classification,
+        confidence: triage.confidence,
+        summary: triage.summary,
+        draftResponse: triage.draftResponse,
+        editedResponse: triage.editedResponse,
+        reasoning: triage.reasoning,
+        priority: triage.priority,
+        createdAt: triage.createdAt,
+        messageId: triage.messageId,
+        prospectId: triage.prospectId,
+        businessName: prospects.businessName,
+        niche: prospects.niche,
+        city: prospects.city,
+        redesignHtmlUrl: prospects.redesignHtmlUrl,
+        linkedinUrl: prospects.linkedinUrl,
+      })
+      .from(triage)
+      .innerJoin(prospects, eq(prospects.id, triage.prospectId))
+      .where(eq(triage.status, "pending"))
+      .orderBy(desc(triage.createdAt));
+
+    rows.sort(
+      (a, b) =>
+        (priorityRank[a.priority ?? "low"] ?? 2) - (priorityRank[b.priority ?? "low"] ?? 2) ||
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
+    return { items: rows };
+  });
+
+  // Get a single triage card with full thread
+  app.get<{ Params: { id: string } }>("/:id", async (req, reply) => {
+    const db = opts.db();
+    const [row] = await db.select().from(triage).where(eq(triage.id, req.params.id));
+    if (!row) return reply.status(404).send({ error: "not_found" });
+    const [prospect] = await db.select().from(prospects).where(eq(prospects.id, row.prospectId));
+    const [thread] = await db
+      .select()
+      .from(threads)
+      .where(eq(threads.prospectId, row.prospectId));
+    const thread_messages = thread
+      ? await db.select().from(messages).where(eq(messages.threadId, thread.id)).orderBy(messages.createdAt)
+      : [];
+    return { triage: row, prospect, thread, messages: thread_messages };
+  });
+
+  // Approve (optionally with edited text) → send
+  app.post<{ Params: { id: string }; Body: { text?: string } }>("/:id/approve", async (req, reply) => {
+    const db = opts.db();
+    const [row] = await db.select().from(triage).where(eq(triage.id, req.params.id));
+    if (!row) return reply.status(404).send({ error: "not_found" });
+    if (row.status !== "pending") return reply.status(400).send({ error: "not_pending" });
+
+    const [prospect] = await db.select().from(prospects).where(eq(prospects.id, row.prospectId));
+    if (!prospect) return reply.status(404).send({ error: "prospect_not_found" });
+
+    const finalText = (req.body?.text ?? row.draftResponse ?? "").trim();
+    if (!finalText) return reply.status(400).send({ error: "empty_message" });
+
+    const cfg = env();
+    if (!cfg.UNIPILE_ACCOUNT_ID || !cfg.UNIPILE_DSN) return reply.status(500).send({ error: "unipile_not_configured" });
+
+    const [thread] = await db.select().from(threads).where(eq(threads.prospectId, prospect.id));
+    let chatId = thread?.externalThreadId ?? prospect.linkedinChatId;
+    let externalMessageId = "";
+
+    try {
+      if (chatId) {
+        const result = await sendChatMessage({ chatId, text: finalText });
+        externalMessageId = result.messageId;
+      } else {
+        if (!prospect.linkedinProviderId) return reply.status(400).send({ error: "no_provider_id" });
+        const result = await startChat({
+          accountId: cfg.UNIPILE_ACCOUNT_ID,
+          providerId: prospect.linkedinProviderId,
+          text: finalText,
+        });
+        chatId = result.chatId;
+        externalMessageId = result.messageId;
+      }
+    } catch (err) {
+      return reply.status(502).send({ error: "send_failed", detail: String(err) });
+    }
+
+    const threadId =
+      thread?.id ??
+      (
+        await db
+          .insert(threads)
+          .values({ prospectId: prospect.id, channel: "linkedin", externalThreadId: chatId })
+          .returning()
+      )[0]!.id;
+    if (thread && !thread.externalThreadId && chatId) {
+      await db.update(threads).set({ externalThreadId: chatId }).where(eq(threads.id, thread.id));
+    }
+
+    await db.insert(messages).values({
+      threadId,
+      direction: "out",
+      channel: "linkedin",
+      content: finalText,
+      sentAt: new Date(),
+      externalMessageId,
+    });
+
+    const edited = req.body?.text && req.body.text.trim() !== (row.draftResponse ?? "").trim();
+    await db
+      .update(triage)
+      .set({
+        status: edited ? "edited" : "approved",
+        editedResponse: edited ? req.body!.text! : null,
+        approvedAt: new Date(),
+        sentAt: new Date(),
+      })
+      .where(eq(triage.id, row.id));
+
+    // For reply triages, move to RESPONDED. For first-DM, keep in AWAITING since they haven't replied to the DM yet.
+    if (row.kind === "first_dm_after_accept") {
+      if (prospect.state !== "AWAITING") {
+        await transition({
+          db,
+          prospectId: prospect.id,
+          from: prospect.state as any,
+          to: "AWAITING",
+          reason: "first_dm_sent",
+          triggeredBy: "operator",
+          patch: { linkedinChatId: chatId ?? undefined },
+        });
+      } else if (chatId && !prospect.linkedinChatId) {
+        await db.update(prospects).set({ linkedinChatId: chatId }).where(eq(prospects.id, prospect.id));
+      }
+    } else {
+      await transition({
+        db,
+        prospectId: prospect.id,
+        from: prospect.state as any,
+        to: "RESPONDED",
+        reason: "operator_replied",
+        triggeredBy: "operator",
+      });
+    }
+
+    return { ok: true };
+  });
+
+  app.post<{ Params: { id: string }; Body: { reason?: string } }>("/:id/reject", async (req, reply) => {
+    const db = opts.db();
+    const [row] = await db.select().from(triage).where(eq(triage.id, req.params.id));
+    if (!row) return reply.status(404).send({ error: "not_found" });
+    await db
+      .update(triage)
+      .set({ status: "rejected", operatorNote: req.body?.reason ?? null })
+      .where(eq(triage.id, row.id));
+    return { ok: true };
+  });
+
+  app.post<{ Body: { count?: number } }>("/seed-demo", async (req) => {
+    const db = opts.db();
+    const n = Math.min(req.body?.count ?? 3, 5);
+    const { seedDemoTriage } = await import("../../scripts/seed-demo.js");
+    const created = await seedDemoTriage(db, n);
+    await notify(`Seeded ${created} demo triage cards`).catch(() => {});
+    return { created };
+  });
+}
