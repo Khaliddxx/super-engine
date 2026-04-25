@@ -3,11 +3,12 @@
 import { useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
-import { Inbox, Workflow, LayoutDashboard, Settings } from "lucide-react";
+import { Inbox, Workflow, LayoutDashboard, Settings, Sparkles } from "lucide-react";
 import { useAuth } from "../../components/AuthProvider";
 
 const tabs = [
   { href: "/queue", label: "Queue", icon: Inbox },
+  { href: "/markets", label: "Markets", icon: Sparkles },
   { href: "/pipeline", label: "Pipeline", icon: Workflow },
   { href: "/dashboard", label: "Dash", icon: LayoutDashboard },
   { href: "/controls", label: "Controls", icon: Settings },

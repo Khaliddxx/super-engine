@@ -95,6 +95,9 @@ export const prospects = pgTable(
     // enrichment
     scrapedServices: text("scraped_services").array(),
     scrapedCopy: text("scraped_copy"),
+    scrapedAboutCopy: text("scraped_about_copy"),
+    scrapedTestimonials: text("scraped_testimonials").array(),
+    scrapedPages: jsonb("scraped_pages"), // Array<{ url, title, length }>
     detectedYear: integer("detected_year"),
 
     // qualification

@@ -1,10 +1,11 @@
 "use client";
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Play, Pause, Plus, RefreshCw, Search, MoreVertical, LogOut } from "lucide-react";
+import { Play, Pause, Plus, RefreshCw, Search, MoreVertical, LogOut, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { api } from "../../../lib/api";
 import { useAuth } from "../../../components/AuthProvider";
 
@@ -30,6 +31,7 @@ type Settings = {
 
 export default function ControlsPage() {
   const qc = useQueryClient();
+  const router = useRouter();
   const { setToken } = useAuth();
 
   const campaignsQ = useQuery({
@@ -92,6 +94,21 @@ export default function ControlsPage() {
     onError: (e: any) => toast.error(e.message ?? "Cycle failed"),
   });
 
+  const surprise = useMutation({
+    mutationFn: () =>
+      api<{ campaign: Campaign; pick: { niche: string; city: string }; summary: { inserted: number } }>(
+        "/api/scout/pick-and-launch",
+        { method: "POST", body: { country: "AU", rank: 1, maxProspects: 10 } },
+      ),
+    onSuccess: (d) => {
+      toast.success(`Launched "${d.campaign.name}" — ${d.summary.inserted} prospects`);
+      qc.invalidateQueries({ queryKey: ["campaigns"] });
+      qc.invalidateQueries({ queryKey: ["pipeline"] });
+      router.push("/pipeline");
+    },
+    onError: (e: any) => toast.error(e.message ?? "Launch failed"),
+  });
+
   const updateCap = useMutation({
     mutationFn: (cap: number) => api("/api/settings", { method: "POST", body: { linkedinDailyCap: cap } }),
     onSuccess: () => {
@@ -118,33 +135,54 @@ export default function ControlsPage() {
 
       <section className="card p-4 space-y-3">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-medium">New campaign</h2>
+          <h2 className="text-sm font-medium">Launch campaign</h2>
           <Plus className="w-4 h-4 text-muted" />
         </div>
-        <input className="input" placeholder="Name (e.g. Sydney nail salons)" value={name} onChange={(e) => setName(e.target.value)} />
-        <input className="input" placeholder="Niche (e.g. nail salon)" value={niche} onChange={(e) => setNiche(e.target.value)} />
-        <div className="grid grid-cols-2 gap-2">
-          <input className="input" placeholder="City" value={city} onChange={(e) => setCity(e.target.value)} />
-          <input className="input" placeholder="Country (AU/US/UK/NL)" value={country} onChange={(e) => setCountry(e.target.value.toUpperCase())} />
-        </div>
-        <div className="flex items-center gap-2">
-          <label className="text-xs text-muted">Max prospects:</label>
-          <input
-            type="number"
-            className="input max-w-[100px]"
-            min={1}
-            max={50}
-            value={maxProspects}
-            onChange={(e) => setMaxProspects(Number(e.target.value) || 10)}
-          />
-        </div>
         <button
-          onClick={() => create.mutate()}
-          disabled={!name || !niche || !city || create.isPending}
-          className="btn-primary w-full"
+          onClick={() => surprise.mutate()}
+          disabled={surprise.isPending}
+          className="btn-primary w-full flex items-center justify-center gap-2 py-4"
         >
-          {create.isPending ? "Creating…" : "Create campaign"}
+          <Zap className="w-4 h-4" />
+          {surprise.isPending ? "Launching…" : "Surprise me — launch #1 market"}
         </button>
+        <p className="text-[11px] text-muted text-center">
+          Picks the top AI-ranked niche × city in AU, creates the campaign, and scrapes 10 prospects.{" "}
+          <Link href="/markets" className="underline">Browse markets</Link>
+        </p>
+
+        <details className="border border-border rounded-xl">
+          <summary className="px-3 py-2 text-xs text-muted cursor-pointer flex items-center justify-between">
+            <span>Manual (I know what I want)</span>
+            <span className="text-[10px]">tap to expand</span>
+          </summary>
+          <div className="p-3 space-y-3 border-t border-border">
+            <input className="input" placeholder="Name (e.g. Sydney nail salons)" value={name} onChange={(e) => setName(e.target.value)} />
+            <input className="input" placeholder="Niche (e.g. nail salon)" value={niche} onChange={(e) => setNiche(e.target.value)} />
+            <div className="grid grid-cols-2 gap-2">
+              <input className="input" placeholder="City" value={city} onChange={(e) => setCity(e.target.value)} />
+              <input className="input" placeholder="Country (AU/US/UK/NL)" value={country} onChange={(e) => setCountry(e.target.value.toUpperCase())} />
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-muted">Max prospects:</label>
+              <input
+                type="number"
+                className="input max-w-[100px]"
+                min={1}
+                max={50}
+                value={maxProspects}
+                onChange={(e) => setMaxProspects(Number(e.target.value) || 10)}
+              />
+            </div>
+            <button
+              onClick={() => create.mutate()}
+              disabled={!name || !niche || !city || create.isPending}
+              className="btn-secondary w-full"
+            >
+              {create.isPending ? "Creating…" : "Create campaign"}
+            </button>
+          </div>
+        </details>
       </section>
 
       <section className="space-y-3">

@@ -1,6 +1,6 @@
 import { prospects, type DbClient, type Prospect } from "@super-engine/db";
 import { domainSearch, pickBestEmail, pickLinkedInUrl } from "../integrations/hunter.js";
-import { scrape, extractSiteInfo } from "../integrations/firecrawl.js";
+import { scrape, scrapeSite, extractSiteInfo, extractRichSiteInfo } from "../integrations/firecrawl.js";
 import { RejectProspectError } from "../lib/errors.js";
 import { transition } from "./transitions.js";
 import { logger } from "../lib/logger.js";
@@ -19,27 +19,51 @@ export async function enrichProspect(db: DbClient, prospect: Prospect): Promise<
   }
 
   try {
-    // Firecrawl scrape first (so we can detect domain-parked/site-blocked early)
-    const scrapeRes = await scrape(prospect.website).catch((e) => {
-      logger.warn({ err: String(e), prospectId: prospect.id }, "firecrawl failed, continuing with partial enrich");
-      return null;
+    // Multi-page site scrape (sitemap + high-signal subpages). Falls back to
+    // homepage-only if sitemap/crawl fails.
+    const siteResults = await scrapeSite(prospect.website, { maxPages: 5 }).catch((e) => {
+      logger.warn({ err: String(e), prospectId: prospect.id }, "scrapeSite failed, falling back to homepage");
+      return [];
     });
 
     let services: string[] | null = null;
     let heroCopy: string | null = null;
+    let aboutCopy: string | null = null;
+    let testimonials: string[] | null = null;
+    let scrapedPagesMeta: Array<{ url: string; title: string; length: number }> | null = null;
     let detectedYear: number | null = null;
-    let textLength = 0;
+    let totalLength = 0;
 
-    if (scrapeRes) {
-      const info = extractSiteInfo(scrapeRes);
-      services = info.services.length ? info.services : null;
-      heroCopy = info.heroCopy || null;
-      detectedYear = info.copyrightYear;
-      textLength = info.textLength;
-
-      if (textLength < 500) {
-        throw new RejectProspectError("domain_parked", `Site has <500 chars of text (${textLength})`);
+    if (siteResults.length > 0) {
+      const rich = extractRichSiteInfo(siteResults);
+      services = rich.services.length ? rich.services : null;
+      heroCopy = rich.heroCopy || null;
+      aboutCopy = rich.aboutCopy || null;
+      testimonials = rich.testimonials.length ? rich.testimonials : null;
+      detectedYear = rich.copyrightYear;
+      totalLength = rich.totalTextLength;
+      scrapedPagesMeta = rich.pagesScraped;
+      logger.info(
+        { prospectId: prospect.id, pages: rich.pagesScraped.length, chars: totalLength },
+        "enrich: rich site info",
+      );
+    } else {
+      // Fallback to single homepage scrape
+      const scrapeRes = await scrape(prospect.website).catch((e) => {
+        logger.warn({ err: String(e), prospectId: prospect.id }, "firecrawl homepage failed, continuing partial");
+        return null;
+      });
+      if (scrapeRes) {
+        const info = extractSiteInfo(scrapeRes);
+        services = info.services.length ? info.services : null;
+        heroCopy = info.heroCopy || null;
+        detectedYear = info.copyrightYear;
+        totalLength = info.textLength;
       }
+    }
+
+    if (totalLength > 0 && totalLength < 500) {
+      throw new RejectProspectError("domain_parked", `Site has <500 chars of text across all pages (${totalLength})`);
     }
 
     // Hunter email enrichment
@@ -65,6 +89,9 @@ export async function enrichProspect(db: DbClient, prospect: Prospect): Promise<
         linkedinUrl: linkedinUrl ?? prospect.linkedinUrl,
         scrapedServices: services,
         scrapedCopy: heroCopy,
+        scrapedAboutCopy: aboutCopy,
+        scrapedTestimonials: testimonials,
+        scrapedPages: scrapedPagesMeta as any,
         detectedYear,
       },
     });

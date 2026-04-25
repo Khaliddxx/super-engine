@@ -1,5 +1,5 @@
 import { deployments, type DbClient, type Prospect, type VerticalTemplate } from "@super-engine/db";
-import { REDESIGN_PROMPT_V1 } from "@super-engine/prompts";
+import { REDESIGN_PROMPT_V1_1 } from "@super-engine/prompts";
 import { claudeText } from "../integrations/claude.js";
 import { deployStaticHtml } from "../integrations/vercel.js";
 import { pickVariant } from "../lib/variants.js";
@@ -41,12 +41,20 @@ export async function redesignProspect(db: DbClient, prospect: Prospect): Promis
       ? `Since ${prospect.detectedYear}`
       : "Established local business";
 
-  const prompt = REDESIGN_PROMPT_V1.render({
+  const pagesMeta = (prospect.scrapedPages as Array<{ url: string; title: string; length: number }> | null) ?? [];
+  const pagesSummary = pagesMeta.length
+    ? pagesMeta.map((p) => `${p.url} (${p.length} chars)`).join("; ")
+    : "(homepage only)";
+
+  const prompt = REDESIGN_PROMPT_V1_1.render({
     name: prospect.businessName,
     niche: prospect.niche,
     city: prospect.city ?? "",
     scraped_services: prospect.scrapedServices ?? [],
     scraped_copy: prospect.scrapedCopy ?? "",
+    scraped_about_copy: prospect.scrapedAboutCopy ?? "",
+    scraped_testimonials: prospect.scrapedTestimonials ?? [],
+    scraped_pages_summary: pagesSummary,
     years,
     palette_json: JSON.stringify(variant.palette),
     fonts_json: JSON.stringify(variant.fonts),
