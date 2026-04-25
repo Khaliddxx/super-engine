@@ -61,12 +61,19 @@ export async function runMarketScout(db: DbClient, opts: ScoutOptions): Promise<
   const country = opts.country.toUpperCase();
   const cities = CITY_SETS[country] ?? CITY_SETS.AU!;
   const niches = opts.niches ?? Object.keys(NICHE_TICKET_WEIGHTS);
-  const maxCells = opts.maxCells ?? 50;
+  // Default: scan the full grid (all niches × all cities). This keeps the
+  // top-10 from being dominated by whichever niches happened to be first in
+  // the object-key order.
+  const maxCells = opts.maxCells ?? niches.length * cities.length;
 
+  // Round-robin interleave niches (niche-0/city-0, niche-1/city-0, ... niche-0/city-1, ...)
+  // so that even if maxCells cuts us short, we get coverage across niches rather
+  // than exhausting the first niche across all cities.
   const cells: Array<{ niche: string; city: string }> = [];
-  for (const niche of niches) {
-    for (const city of cities) cells.push({ niche, city });
-    if (cells.length >= maxCells) break;
+  for (let ci = 0; ci < cities.length; ci++) {
+    for (let ni = 0; ni < niches.length; ni++) {
+      cells.push({ niche: niches[ni]!, city: cities[ci]! });
+    }
   }
   const trimmed = cells.slice(0, maxCells);
 
@@ -84,11 +91,22 @@ export async function runMarketScout(db: DbClient, opts: ScoutOptions): Promise<
       const pctWithWebsite = places.length ? withWebsite / places.length : 0;
       const pctOutdatedEstimate = 0.6; // heuristic; full Lighthouse scoring skipped per scope
       const tw = NICHE_TICKET_WEIGHTS[cell.niche] ?? 1.0;
+      // Median review count per business — better signal than sum (which
+      // lets chain niches like "hotel" with 10k-review flagships dominate).
+      // We want "healthy independent local businesses", not "every top-20
+      // place is a corporate chain".
+      const reviewCounts = places.map((p) => p.userRatingCount ?? 0).sort((a, b) => a - b);
+      const medianReviews = reviewCounts.length
+        ? reviewCounts[Math.floor(reviewCounts.length / 2)] ?? 0
+        : 0;
       const opportunityScore =
         Math.log(Math.max(places.length, 1)) *
         pctOutdatedEstimate *
-        Math.max(Math.log(totalReviews + 1), 1) *
-        tw;
+        Math.max(Math.log(medianReviews + 10), 1) *
+        tw *
+        // If <25% of top businesses have a website, they're not buying
+        // redesigns. Otherwise let it flow linearly.
+        Math.max(pctWithWebsite, 0.25);
 
       const row: ScoutRow = {
         niche: cell.niche,

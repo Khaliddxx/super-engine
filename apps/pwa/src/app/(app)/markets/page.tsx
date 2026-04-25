@@ -24,6 +24,18 @@ type LaunchResponse = {
   summary: { found: number; inserted: number; skippedDuplicateDomain: number; skippedNoWebsite: number };
 };
 
+type ScoutResponse = {
+  country: string;
+  items: ScoutRow[];
+  meta: {
+    totalOpportunities: number;
+    nichesScanned: number;
+    citiesScanned: number;
+    cacheHit: boolean;
+    note: string;
+  };
+};
+
 const COUNTRIES = ["AU", "US", "UK", "NL"] as const;
 
 export default function MarketsPage() {
@@ -33,7 +45,7 @@ export default function MarketsPage() {
 
   const scoutQ = useQuery({
     queryKey: ["scout", country],
-    queryFn: () => api<{ country: string; items: ScoutRow[] }>(`/api/scout?country=${country}&limit=10`),
+    queryFn: () => api<ScoutResponse>(`/api/scout?country=${country}&limit=10`),
   });
 
   const refresh = useMutation({
@@ -67,6 +79,7 @@ export default function MarketsPage() {
   };
 
   const items = scoutQ.data?.items ?? [];
+  const meta = scoutQ.data?.meta;
   const isBusy = refresh.isPending || launch.isPending;
 
   return (
@@ -74,7 +87,11 @@ export default function MarketsPage() {
       <header className="py-4 flex items-center justify-between">
         <div>
           <h1 className="text-xl font-serif">Markets</h1>
-          <p className="text-xs text-muted">AI-ranked niche × city opportunities</p>
+          <p className="text-xs text-muted">
+            {meta
+              ? `${meta.totalOpportunities} opportunities from ${meta.nichesScanned} niches × ${meta.citiesScanned} cities`
+              : "AI-ranked niche × city opportunities"}
+          </p>
         </div>
         <div className="flex gap-1 bg-surface border border-border rounded-xl p-1">
           {COUNTRIES.map((c) => (
@@ -147,9 +164,9 @@ export default function MarketsPage() {
                 {m.niche} · {m.city}
               </p>
               <div className="flex items-center gap-3 text-xs text-muted mt-0.5">
-                <span className="flex items-center gap-1">
+                <span className="flex items-center gap-1" title="Top-20 reviews on Google Places">
                   <Users className="w-3 h-3" />
-                  {m.businessCount}
+                  {(m.totalReviews / 1000).toFixed(m.totalReviews >= 10000 ? 0 : 1)}k reviews
                 </span>
                 <span className="flex items-center gap-1">
                   <Star className="w-3 h-3" />

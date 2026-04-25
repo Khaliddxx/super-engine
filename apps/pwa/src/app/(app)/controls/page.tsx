@@ -49,6 +49,13 @@ export default function ControlsPage() {
     queryFn: () => api<{ items: Array<{ id: string; version: string; preview: string }> }>("/api/prompts"),
   });
 
+  const diagQ = useQuery({
+    queryKey: ["diagnostics"],
+    queryFn: () =>
+      api<{ checks: Array<{ service: string; ok: boolean; detail: string }> }>("/api/settings/diagnostics"),
+    staleTime: 60_000,
+  });
+
   const [name, setName] = useState("");
   const [niche, setNiche] = useState("");
   const [city, setCity] = useState("");
@@ -228,6 +235,33 @@ export default function ControlsPage() {
           </div>
         ))}
       </section>
+
+      {diagQ.data && (
+        <section className="card p-4 space-y-2">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-medium">Integration diagnostics</h2>
+            <button
+              onClick={() => qc.invalidateQueries({ queryKey: ["diagnostics"] })}
+              className="text-xs text-muted"
+            >
+              Refresh
+            </button>
+          </div>
+          <div className="space-y-1">
+            {diagQ.data.checks.map((c) => (
+              <div key={c.service} className="flex items-center justify-between text-xs">
+                <div className="flex items-center gap-2">
+                  <span className={`w-2 h-2 rounded-full ${c.ok ? "bg-green-400" : "bg-red-400"}`} />
+                  <span className="capitalize font-medium">{c.service.replace(/_/g, " ")}</span>
+                </div>
+                <span className={`${c.ok ? "text-muted" : "text-red-300"} truncate max-w-[55%] text-right`}>
+                  {c.detail}
+                </span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {settingsQ.data && (
         <section className="card p-4 space-y-3">

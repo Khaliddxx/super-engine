@@ -3,6 +3,12 @@ import { runMarketScout, type ScoutRow } from "./market-scout.js";
 import { scrapeProspectsForCampaign, type ScrapeSummary } from "./scrape.js";
 import { logger } from "../lib/logger.js";
 
+export interface FreshScoutResult {
+  rows: ScoutRow[];
+  totalCells: number;
+  cacheHit: boolean;
+}
+
 /**
  * Return the most recent still-fresh scout rows for a country, or run a new
  * scan if none are available. Rows are ordered by opportunity_score desc.
@@ -10,8 +16,8 @@ import { logger } from "../lib/logger.js";
 export async function getFreshScoutRows(
   db: DbClient,
   country: string,
-  opts: { maxAgeHours?: number; maxCells?: number } = {},
-): Promise<ScoutRow[]> {
+  opts: { maxAgeHours?: number } = {},
+): Promise<FreshScoutResult> {
   const maxAgeMs = (opts.maxAgeHours ?? 24) * 60 * 60 * 1000;
   const cutoff = new Date(Date.now() - maxAgeMs);
   const upper = country.toUpperCase();
@@ -21,24 +27,46 @@ export async function getFreshScoutRows(
     .from(marketScans)
     .where(and(eq(marketScans.country, upper), gt(marketScans.createdAt, cutoff)))
     .orderBy(desc(marketScans.opportunityScore))
-    .limit(50);
+    .limit(200);
 
   if (rows.length > 0) {
     logger.info({ country: upper, rowCount: rows.length }, "scout cache hit");
-    return rows.map((r) => ({
-      niche: r.niche,
-      city: r.city,
-      businessCount: r.businessCount ?? 0,
-      avgRating: r.avgRating ? Number(r.avgRating) : 0,
-      totalReviews: r.totalReviews ?? 0,
-      pctWithWebsite: r.pctWithWebsite ? Number(r.pctWithWebsite) : 0,
-      opportunityScore: r.opportunityScore ? Number(r.opportunityScore) : 0,
-      nicheTicketWeight: r.nicheTicketWeight ? Number(r.nicheTicketWeight) : 1,
-    }));
+    return {
+      rows: rows.map((r) => ({
+        niche: r.niche,
+        city: r.city,
+        businessCount: r.businessCount ?? 0,
+        avgRating: r.avgRating ? Number(r.avgRating) : 0,
+        totalReviews: r.totalReviews ?? 0,
+        pctWithWebsite: r.pctWithWebsite ? Number(r.pctWithWebsite) : 0,
+        opportunityScore: r.opportunityScore ? Number(r.opportunityScore) : 0,
+        nicheTicketWeight: r.nicheTicketWeight ? Number(r.nicheTicketWeight) : 1,
+      })),
+      totalCells: rows.length,
+      cacheHit: true,
+    };
   }
 
   logger.info({ country: upper }, "scout cache miss — running fresh scan");
-  return runMarketScout(db, { country: upper, maxCells: opts.maxCells ?? 30 });
+  const scouted = await runMarketScout(db, { country: upper });
+  return { rows: scouted, totalCells: scouted.length, cacheHit: false };
+}
+
+/**
+ * Take ranked rows and return at most `maxPerNiche` rows per niche so the
+ * top-10 shows actual variety instead of nine flavors of "hotel".
+ * Preserves the overall score ordering.
+ */
+export function diversifyByNiche(rows: ScoutRow[], maxPerNiche = 2): ScoutRow[] {
+  const seen = new Map<string, number>();
+  const out: ScoutRow[] = [];
+  for (const r of rows) {
+    const c = seen.get(r.niche) ?? 0;
+    if (c >= maxPerNiche) continue;
+    seen.set(r.niche, c + 1);
+    out.push(r);
+  }
+  return out;
 }
 
 export interface LaunchResult {
@@ -60,11 +88,12 @@ export async function pickAndLaunch(
   const rank = Math.max(1, opts.rank ?? 1);
   const maxProspects = Math.max(1, Math.min(opts.maxProspects ?? 10, 20));
 
-  const rows = await getFreshScoutRows(db, country);
-  if (rows.length === 0) {
+  const { rows } = await getFreshScoutRows(db, country);
+  const diversified = diversifyByNiche(rows, 2);
+  if (diversified.length === 0) {
     throw new Error(`No market opportunities found for country=${country}`);
   }
-  const pick = rows[Math.min(rank - 1, rows.length - 1)]!;
+  const pick = diversified[Math.min(rank - 1, diversified.length - 1)]!;
 
   const name = `${pick.city} ${pick.niche}s`;
   const [campaign] = await db

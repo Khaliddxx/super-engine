@@ -25,10 +25,20 @@ function extractDomain(url: string): string {
   }
 }
 
+export class HunterAuthError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "HunterAuthError";
+  }
+}
+
 export async function domainSearch(websiteUrl: string): Promise<HunterDomainResult> {
   const domain = extractDomain(websiteUrl);
   const api = `https://api.hunter.io/v2/domain-search?domain=${domain}&api_key=${env().HUNTER_API_KEY}&limit=10`;
   const res = await fetch(api);
+  if (res.status === 401) {
+    throw new HunterAuthError("Hunter API key invalid — go to Controls → Diagnostics to verify");
+  }
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Hunter domainSearch failed: ${res.status} ${text}`);

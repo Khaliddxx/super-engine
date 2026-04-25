@@ -1,5 +1,5 @@
 import { prospects, type DbClient, type Prospect } from "@super-engine/db";
-import { domainSearch, pickBestEmail, pickLinkedInUrl } from "../integrations/hunter.js";
+import { domainSearch, HunterAuthError, pickBestEmail, pickLinkedInUrl } from "../integrations/hunter.js";
 import { scrape, scrapeSite, extractSiteInfo, extractRichSiteInfo } from "../integrations/firecrawl.js";
 import { RejectProspectError } from "../lib/errors.js";
 import { transition } from "./transitions.js";
@@ -66,8 +66,10 @@ export async function enrichProspect(db: DbClient, prospect: Prospect): Promise<
       throw new RejectProspectError("domain_parked", `Site has <500 chars of text across all pages (${totalLength})`);
     }
 
-    // Hunter email enrichment
+    // Hunter email enrichment — surface auth failures LOUDLY so we don't
+    // silently reject every prospect when the key is invalid/expired.
     const hunter = await domainSearch(prospect.website).catch((e) => {
+      if (e instanceof HunterAuthError) throw e;
       logger.warn({ err: String(e), prospectId: prospect.id }, "hunter failed, continuing without email");
       return null;
     });
