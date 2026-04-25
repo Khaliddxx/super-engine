@@ -8,31 +8,38 @@ export interface LinkedInInviteInput {
 }
 
 export const LINKEDIN_INVITE_PROMPT_V1 = {
-  version: "1.0",
+  version: "2.0",
   deployedAt: "2026-04-26",
-  render: (i: LinkedInInviteInput) => `Write a LinkedIn connection request note from a web designer to the owner/manager of a local business.
+  render: (i: LinkedInInviteInput) => `Write a LinkedIn connection-request note from one independent web designer to the owner or manager of a local business.
 
-The note MUST be under 300 characters (LinkedIn's hard limit). Aim for 220-280.
+The note MUST be under 300 characters total (LinkedIn's hard limit). Aim for 180 to 260.
 
 <prospect>
 Business: ${i.business_name}
 Niche: ${i.niche}
-City: ${i.city}
-Top issues with their current site: ${i.top_issues.join("; ")}
+City where THEIR business is: ${i.city}
+Issues I noticed on their site: ${i.top_issues.join("; ")}
 </prospect>
 
 <redesign>
-A live preview exists at: ${i.redesign_url}
-(Don't include the URL in this connection note — that's saved for after they accept.)
+I already built a redesigned preview at: ${i.redesign_url}
+Do NOT include the URL in this note. We send the link AFTER they accept.
 </redesign>
 
-Requirements:
-- Reference one specific issue from top_issues (not a generic complaint)
-- Mention you built a redesigned preview (without linking — tease it)
-- Warm, respectful, direct. Not salesy.
-- No "I hope this finds you well", no "dear", no corporate openers
-- Sign off with "— ${i.operator_first_name}"
-- Return JSON ONLY: { "body": "..." }`,
+HARD RULES:
+- Do NOT claim to be located in their city or any city. Do NOT use phrases like "I'm a designer in ${i.city}" or "local to you". You have no location affiliation with them.
+- Do NOT use em-dashes (—) or en-dashes (–). Use commas, periods, or line breaks.
+- Do NOT use "I hope this finds you well", "Dear", "Hi there", or any corporate opener.
+- Do NOT flatter. Do NOT say "love what you do".
+- Reference ONE specific issue from the list above (not a generic "your site could be improved").
+- Mention you built a redesigned preview without linking it (tease it).
+- Sign off with ONLY the first name on its own line: "${i.operator_first_name}"
+  (No dash before the name. No "Best," or "Thanks,".)
+- Use contractions. Sound like a human texting, not a consultant emailing.
+- Write at roughly a 7th-grade reading level.
+
+Return JSON ONLY, nothing else:
+{ "body": "..." }`,
 };
 
 export interface FirstDmInput {
@@ -45,30 +52,37 @@ export interface FirstDmInput {
 }
 
 export const FIRST_DM_PROMPT_V1 = {
-  version: "1.0",
+  version: "2.0",
   deployedAt: "2026-04-26",
   render: (i: FirstDmInput) => `The prospect just accepted your LinkedIn connection request. Write a first DM that shares the redesign preview link.
 
 <prospect>
 Business: ${i.business_name}
 Niche: ${i.niche}
-City: ${i.city}
-Top issues with their current site: ${i.top_issues.join("; ")}
+City where THEIR business is: ${i.city}
+Issues I noticed on their site: ${i.top_issues.join("; ")}
 </prospect>
 
 <redesign>
-Live preview: ${i.redesign_url}
+Live preview URL (include this exactly once): ${i.redesign_url}
 </redesign>
 
-Requirements:
-- Under 110 words. Conversational, not formal.
-- Thank them briefly for accepting
-- Reference one specific issue from top_issues
-- Include the preview link exactly once with clear context
-- Invite a low-pressure response (e.g., "even if it's just to say 'not for us', I'd value the feedback")
-- No P.S., no "I hope this finds you well"
-- Sign off with just "— ${i.operator_first_name}"
-- Return JSON ONLY: { "body": "..." }`,
+HARD RULES:
+- Under 110 words.
+- Do NOT claim to be in their city or any city. No "fellow local", no "based in ${i.city}".
+- Do NOT use em-dashes (—) or en-dashes (–). Use commas or periods.
+- Thank them briefly for connecting (one short sentence).
+- Reference ONE specific issue from the list above, concretely.
+- Present the preview link with a short contextual sentence. Example phrasing: "Mocked something up so you can see what I mean: <url>".
+- Invite a low-pressure response. A line like "Even a quick 'not for us' is useful feedback" is good.
+- No P.S.
+- No "I hope this finds you well".
+- Sign off with ONLY the first name on its own line: "${i.operator_first_name}"
+  (No dash. No "Cheers," or "Best,".)
+- Conversational. Contractions. Short sentences.
+
+Return JSON ONLY, nothing else:
+{ "body": "..." }`,
 };
 
 export interface EmailInitialInput {
@@ -80,31 +94,33 @@ export interface EmailInitialInput {
 }
 
 export const EMAIL_INITIAL_PROMPT_V1 = {
-  version: "1.0",
+  version: "2.0",
   deployedAt: "2026-04-26",
-  render: (i: EmailInitialInput) => `Write a cold email from a web design service to a local business owner.
+  render: (i: EmailInitialInput) => `Write a cold email from an independent web designer to the owner or manager of a local business.
 The email introduces a specific redesigned preview of their homepage.
 Tone: warm, direct, respectful of their time. Not salesy. No jargon.
 
 <prospect>
 Business: ${i.business_name}
-Recipient role: Owner / Manager
-Their city: ${i.city}
-Top issues with their current site: ${i.top_issues.join("; ")}
+City where THEIR business is: ${i.city}
+Issues I noticed on their site: ${i.top_issues.join("; ")}
 </prospect>
 
 <redesign>
-Live preview: ${i.redesign_url}
+Live preview URL (include this exactly once): ${i.redesign_url}
 </redesign>
 
-Requirements:
-- Subject line under 50 chars
-- Body under 120 words
-- Reference one specific issue from top_issues (not a generic complaint)
-- Include the preview link exactly once, with clear context
+HARD RULES:
+- Subject line under 50 chars. No clickbait, no caps lock, no emoji.
+- Body under 120 words.
+- Do NOT claim to be in their city or any city. No "fellow local" language.
+- Do NOT use em-dashes (—) or en-dashes (–). Use commas or periods.
+- Reference ONE specific issue from the list above concretely.
+- Include the preview link exactly once.
+- No "I hope this finds you well".
 - No P.S.
-- No "I hope this finds you well"
-- Sign off with just "— ${i.operator_first_name}"
+- Sign off with ONLY the first name on its own line: "${i.operator_first_name}"
 
-Return JSON ONLY: { "subject": "...", "body": "..." }`,
+Return JSON ONLY, nothing else:
+{ "subject": "...", "body": "..." }`,
 };

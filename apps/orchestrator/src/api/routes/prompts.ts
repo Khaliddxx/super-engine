@@ -3,7 +3,7 @@ import type { DbClient } from "@super-engine/db";
 import { requireAuth } from "../auth-guard.js";
 import {
   QUALIFY_PROMPT_V1,
-  REDESIGN_PROMPT_V1_1,
+  REDESIGN_PROMPT_V2,
   TEMPLATE_PROMPT_V1,
   LINKEDIN_INVITE_PROMPT_V1,
   FIRST_DM_PROMPT_V1,
@@ -41,7 +41,7 @@ export async function promptRoutes(app: FastifyInstance, _opts: Opts): Promise<v
       items: [
         { id: "qualify", version: QUALIFY_PROMPT_V1.version, preview: QUALIFY_PROMPT_V1.render(demoArgs.qualify) },
         { id: "template", version: TEMPLATE_PROMPT_V1.version, preview: TEMPLATE_PROMPT_V1.render({ niche_name: "(niche)" }) },
-        { id: "redesign", version: REDESIGN_PROMPT_V1_1.version, preview: "(Long — not shown here. Uses rich scraped content.)" },
+        { id: "redesign", version: REDESIGN_PROMPT_V2.version, preview: "(Long. Uses real scraped assets: logo, hero image/video, brand palette/fonts.)" },
         { id: "invite", version: LINKEDIN_INVITE_PROMPT_V1.version, preview: LINKEDIN_INVITE_PROMPT_V1.render(demoArgs.invite) },
         { id: "first_dm", version: FIRST_DM_PROMPT_V1.version, preview: FIRST_DM_PROMPT_V1.render(demoArgs.invite) },
         { id: "email_initial", version: EMAIL_INITIAL_PROMPT_V1.version, preview: "(Deferred — email not sending.)" },

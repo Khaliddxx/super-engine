@@ -15,20 +15,14 @@ async function listByState(db: DbClient, state: string, limit = 10): Promise<Pro
  * Returns counts per stage processed.
  */
 export async function runPipelineCycle(db: DbClient): Promise<Record<string, number>> {
-  let enriched = 0;
   let qualified = 0;
+  let enriched = 0;
   let redesigned = 0;
 
+  // 1. QUALIFY FIRST (cheap: microlink screenshot + one Claude vision call)
+  // This is the gatekeeper — reject chains, parked sites, and already-good sites
+  // BEFORE we pay Firecrawl + Hunter credits on them.
   for (const p of await listByState(db, "NEW", 5)) {
-    try {
-      await enrichProspect(db, p);
-      enriched++;
-    } catch (err) {
-      logger.error({ err: String(err), prospectId: p.id }, "enrich failed");
-    }
-  }
-
-  for (const p of await listByState(db, "ENRICHED", 5)) {
     try {
       await qualifyProspect(db, p);
       qualified++;
@@ -37,7 +31,18 @@ export async function runPipelineCycle(db: DbClient): Promise<Record<string, num
     }
   }
 
-  for (const p of await listByState(db, "QUALIFIED", 3)) {
+  // 2. ENRICH the ones that passed qualify (multi-page scrape + assets + Hunter)
+  for (const p of await listByState(db, "QUALIFIED", 5)) {
+    try {
+      await enrichProspect(db, p);
+      enriched++;
+    } catch (err) {
+      logger.error({ err: String(err), prospectId: p.id }, "enrich failed");
+    }
+  }
+
+  // 3. REDESIGN using the real assets we just extracted
+  for (const p of await listByState(db, "ENRICHED", 3)) {
     try {
       await redesignProspect(db, p);
       redesigned++;
@@ -46,7 +51,7 @@ export async function runPipelineCycle(db: DbClient): Promise<Record<string, num
     }
   }
 
-  return { enriched, qualified, redesigned };
+  return { qualified, enriched, redesigned };
 }
 
 /**

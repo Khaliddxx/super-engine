@@ -15,6 +15,13 @@
       "when": 1777145801860,
       "tag": "0001_bright_onslaught",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1777148473535,
+      "tag": "0002_volatile_tarantula",
+      "breakpoints": true
     }
   ]
 }

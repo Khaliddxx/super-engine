@@ -98,6 +98,7 @@ export const prospects = pgTable(
     scrapedAboutCopy: text("scraped_about_copy"),
     scrapedTestimonials: text("scraped_testimonials").array(),
     scrapedPages: jsonb("scraped_pages"), // Array<{ url, title, length }>
+    scrapedAssets: jsonb("scraped_assets"), // { logo, heroImage, heroVideo, images[], videos[], brandColors[], brandFonts[] }
     detectedYear: integer("detected_year"),
 
     // qualification

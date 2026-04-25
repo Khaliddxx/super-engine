@@ -22,6 +22,20 @@ function firstName(full: string): string {
   return (full || "Operator").split(/\s+/)[0] ?? "Operator";
 }
 
+/**
+ * Post-process any outbound copy: replace em/en-dashes with commas,
+ * strip the "—" prefix that older prompt versions baked into sign-offs,
+ * and collapse any run of whitespace the model produced.
+ */
+function scrubOutboundCopy(s: string): string {
+  return s
+    .replace(/^[\s\n]*[—–]\s*/gm, "")
+    .replace(/[—–]/g, ", ")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 async function sentToday(db: DbClient, kind: "invite" | "dm"): Promise<number> {
   const startOfDay = new Date();
   startOfDay.setHours(0, 0, 0, 0);
@@ -49,11 +63,10 @@ export async function draftInviteNote(prospect: Prospect): Promise<string> {
       redesign_url: prospect.redesignHtmlUrl ?? "",
       operator_first_name: firstName(cfg.OPERATOR_NAME),
     }),
-    { maxTokens: 600 },
+    { maxTokens: 600, temperature: 0.8 },
   );
   const parsed = OutreachMessageSchema.parse(extractJson(raw));
-  // Hard-cap at 299 chars
-  return parsed.body.slice(0, 299);
+  return scrubOutboundCopy(parsed.body).slice(0, 299);
 }
 
 /** Draft the first DM to send after they accept the connection. */
@@ -68,10 +81,10 @@ export async function draftFirstDm(prospect: Prospect): Promise<string> {
       redesign_url: prospect.redesignHtmlUrl ?? "",
       operator_first_name: firstName(cfg.OPERATOR_NAME),
     }),
-    { maxTokens: 700 },
+    { maxTokens: 700, temperature: 0.8 },
   );
   const parsed = OutreachMessageSchema.parse(extractJson(raw));
-  return parsed.body;
+  return scrubOutboundCopy(parsed.body);
 }
 
 /** Send a LinkedIn connection invite, respecting send window + daily cap. */

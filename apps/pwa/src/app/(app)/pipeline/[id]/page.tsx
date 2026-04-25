@@ -182,8 +182,10 @@ export default function PipelineDetailPage() {
             </div>
             <iframe
               src={p.redesignHtmlUrl}
-              className="w-full h-72 bg-white"
-              sandbox="allow-same-origin"
+              className="w-full h-[420px] bg-white"
+              sandbox="allow-same-origin allow-scripts allow-popups allow-forms allow-top-navigation-by-user-activation"
+              loading="lazy"
+              referrerPolicy="no-referrer"
             />
           </div>
         )}

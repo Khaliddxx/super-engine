@@ -1,3 +1,16 @@
+export interface RedesignAssets {
+  logo: string | null;
+  heroImage: string | null;
+  heroVideo: string | null;
+  images: string[];
+  videos: string[];
+  ogImage: string | null;
+  favicon: string | null;
+  brandColors: string[];
+  brandFonts: string[];
+  socials: Record<string, string | undefined>;
+}
+
 export interface RedesignInput {
   name: string;
   niche: string;
@@ -7,146 +20,125 @@ export interface RedesignInput {
   scraped_about_copy?: string;
   scraped_testimonials?: string[];
   scraped_pages_summary?: string;
+  assets: RedesignAssets;
   years: string;
-  palette_json: string;
-  fonts_json: string;
-  layout_name: string;
+  current_year: number;
   template_primary_cta: string;
   template_secondary_cta: string;
   template_tagline: string;
-  template_hero_subtitle_style: string;
   template_services: Array<{ name: string; desc: string }>;
-  template_extra_section_title: string;
-  template_extra_section_items: Array<{ heading: string; body: string }>;
   operator_name: string;
   operator_email: string;
   operator_phone: string;
 }
 
-export const REDESIGN_PROMPT_V1 = {
-  version: "1.0",
+function list(items: string[], limit = 12): string {
+  if (!items.length) return "(none)";
+  return items
+    .slice(0, limit)
+    .map((s) => `- ${s}`)
+    .join("\n");
+}
+
+function safe(s: string | null | undefined): string {
+  return (s ?? "").trim() || "(none)";
+}
+
+export const REDESIGN_PROMPT_V2 = {
+  version: "2.0",
   deployedAt: "2026-04-26",
-  render: (i: RedesignInput) => `You are generating a single-file HTML redesign for a local business website.
-The output will be deployed as-is and shown to the business owner in a cold outreach message.
-It must be polished, modern, and specific to their business.
-
-<business>
-Name: ${i.name}
-Niche: ${i.niche}
-City: ${i.city}
-Services offered: ${i.scraped_services.join(", ") || "(none scraped — infer from niche)"}
-Hero copy from current site: ${i.scraped_copy || "(none)"}
-Years in business: ${i.years}
-</business>
-
-<design_system>
-Palette: ${i.palette_json}
-Fonts: ${i.fonts_json}
-Layout: ${i.layout_name}
-</design_system>
-
-<vertical_template>
-Tagline direction: ${i.template_tagline}
-Hero subtitle style: ${i.template_hero_subtitle_style}
-Primary CTA: ${i.template_primary_cta}
-Secondary CTA: ${i.template_secondary_cta}
-Required services: ${JSON.stringify(i.template_services)}
-Extra section title: ${i.template_extra_section_title}
-Extra section items: ${JSON.stringify(i.template_extra_section_items)}
-</vertical_template>
-
-<contact_block>
-Contact person: ${i.operator_name}
-Contact email: ${i.operator_email}
-Contact phone: ${i.operator_phone}
-</contact_block>
-
-Hard requirements:
-- Single HTML file, everything inline (CSS in <style>, no external JS)
-- Import fonts from Google Fonts only
-- Mobile responsive (breakpoint at 768px)
-- Use the provided palette as CSS variables (--bg, --fg, --accent, --muted, --surface)
-- Use the provided fonts for heading (serif) and body (sans)
-- Include: nav, hero, services grid (3 cards matching template_services), extra info section (using extra_section), footer
-- A <section id="book"> is REQUIRED. It must contain the contact person's name, email (as mailto: link), and phone (as tel: link) — NOT the business's own contact info. This is the redesign agency's contact.
-- Every primary CTA (button class "btn-primary") must have href="#book"
-- Business name must appear prominently in nav and hero
-- Services must be specific — use the required services from the template, adapted with business-specific wording where the scraped info allows
-- No stock image URLs (use CSS gradient visual blocks instead)
-- Output nothing except the HTML document
-
-Begin output with <!DOCTYPE html>.`,
-};
-
-export const REDESIGN_PROMPT_V1_1 = {
-  version: "1.1",
-  deployedAt: "2026-04-26",
-  render: (i: RedesignInput) => `You are generating a single-file HTML redesign for a local business website.
-The output will be deployed as-is and shown to the business owner in a cold outreach message.
-It must be polished, modern, and SPECIFIC to this exact business — not a generic niche template.
+  render: (i: RedesignInput) => `You are a senior product designer building a full, production-quality website redesign for a local business.
+This is NOT a template fill-in. It is a bespoke redesign using THE BUSINESS'S OWN ASSETS (their real photos, videos, logo, brand colors).
+The business owner will see this preview in a cold outreach message. It must feel like you actually studied their site — because you did.
 
 <business>
 Name: ${i.name}
 Niche: ${i.niche}
 City: ${i.city}
 Years in business: ${i.years}
+Current year: ${i.current_year}
 
-About (scraped from the live site):
-${i.scraped_about_copy?.trim() || "(no About section scraped — infer conservatively from the hero copy below)"}
-
-Hero / landing copy from current site:
-${i.scraped_copy?.trim() || "(none scraped)"}
+About / hero copy scraped from their live site:
+${safe(i.scraped_about_copy) !== "(none)" ? safe(i.scraped_about_copy) : safe(i.scraped_copy)}
 
 Services the site actually lists:
-${i.scraped_services.length ? i.scraped_services.map((s) => `- ${s}`).join("\n") : "(none scraped — infer from niche)"}
+${list(i.scraped_services)}
 
-Customer testimonials / quotes scraped from the site:
-${(i.scraped_testimonials ?? []).length ? (i.scraped_testimonials ?? []).map((t) => `- "${t.replace(/"/g, "\\\"")}"`).join("\n") : "(none)"}
+Customer testimonials scraped from the site (do NOT fabricate):
+${list((i.scraped_testimonials ?? []).map((t) => `"${t.replace(/"/g, '\\"')}"`))}
 
 Pages crawled: ${i.scraped_pages_summary ?? "(homepage only)"}
 </business>
 
-<design_system>
-Palette: ${i.palette_json}
-Fonts: ${i.fonts_json}
-Layout: ${i.layout_name}
-</design_system>
+<real_assets>
+These are the business's OWN assets scraped from their live site. USE THEM.
 
-<vertical_template>
+Logo URL: ${i.assets.logo ?? "(none — use a clean wordmark of the business name in the brand font)"}
+Favicon URL: ${i.assets.favicon ?? "(none)"}
+Hero image URL: ${i.assets.heroImage ?? "(none)"}
+Hero video URL: ${i.assets.heroVideo ?? "(none)"}
+OG image URL: ${i.assets.ogImage ?? "(none)"}
+
+All image URLs available (use these directly as src="..."):
+${list(i.assets.images, 20)}
+
+All video URLs available (use <video> tag with muted autoplay loop playsinline for backgrounds):
+${list(i.assets.videos, 6)}
+
+Brand colors detected on their current site (hex): ${i.assets.brandColors.join(", ") || "(none — derive a complementary palette from the hero image)"}
+Brand fonts detected: ${i.assets.brandFonts.join(", ") || "(none — pick a modern pairing from Google Fonts)"}
+
+Social links: ${JSON.stringify(i.assets.socials)}
+</real_assets>
+
+<vertical_intel>
 Tagline direction: ${i.template_tagline}
-Hero subtitle style: ${i.template_hero_subtitle_style}
-Primary CTA: ${i.template_primary_cta}
-Secondary CTA: ${i.template_secondary_cta}
-Suggested services (use as fallback ONLY if scraped services are missing):
+Primary CTA label: ${i.template_primary_cta}
+Secondary CTA label: ${i.template_secondary_cta}
+Fallback service descriptions if scraped list is sparse:
 ${JSON.stringify(i.template_services)}
-Extra section title: ${i.template_extra_section_title}
-Extra section items: ${JSON.stringify(i.template_extra_section_items)}
-</vertical_template>
+</vertical_intel>
 
 <contact_block>
-Contact person: ${i.operator_name}
-Contact email: ${i.operator_email}
-Contact phone: ${i.operator_phone}
+This is the REDESIGN AGENCY's contact (not the business's). Put this in #book.
+Name: ${i.operator_name}
+Email: ${i.operator_email}
+Phone: ${i.operator_phone}
 </contact_block>
 
-Hard requirements:
-- Single HTML file, everything inline (CSS in <style>, no external JS)
-- Import fonts from Google Fonts only
-- Mobile responsive (breakpoint at 768px)
-- Use the provided palette as CSS variables (--bg, --fg, --accent, --muted, --surface)
-- Use the provided fonts for heading (serif) and body (sans)
-- Include: nav, hero, services grid, extra info section (using extra_section), footer
-- Business name must appear prominently in nav and hero
-- A <section id="book"> is REQUIRED. It must contain the contact person's name, email (as mailto: link), and phone (as tel: link) — NOT the business's own contact info. This is the redesign agency's contact.
-- Every primary CTA (button class "btn-primary") must have href="#book"
-- No stock image URLs (use CSS gradient visual blocks instead)
-- Output nothing except the HTML document
+<hard_requirements>
+1. Output a SINGLE self-contained HTML document, everything inline.
+2. Begin output with exactly: <!DOCTYPE html>
+3. Output ONLY the HTML — no markdown fences, no prose, no commentary.
+4. Mobile responsive (breakpoint at 768px). Mobile-first layout.
+5. Use their real images/videos directly — do NOT render CSS gradient blocks where an image URL is available. Hero must use either heroVideo (autoplay muted loop playsinline) or heroImage as an actual media element, not a background gradient.
+6. Logo in nav: if logo URL present, use <img src="${i.assets.logo ?? ""}"> at 40px height; otherwise render the business name as a serif wordmark.
+7. Brand palette: derive CSS variables from the scraped brand colors. Map the most-used non-neutral hex to --accent. Use --bg (near-white or near-black depending on mood), --fg (high-contrast text), --muted (60% opacity fg), --surface (subtle card bg).
+8. Typography: if brand fonts were detected, import them from Google Fonts at the top of <head>. Otherwise pick a tasteful modern pairing (one serif display + one sans body).
+9. Required sections, in order: <nav>, <section id="hero">, <section id="services">, <section id="about">, <section id="gallery"> (only if 3+ images), <section id="testimonials"> (only if testimonials scraped), <section id="book">, <footer>.
+10. #book section MUST contain the agency contact above as:
+    - name text
+    - email as <a href="mailto:...">
+    - phone as <a href="tel:...">
+11. Every button with class "btn-primary" must have href="#book".
+12. Services grid: prefer scraped services verbatim. If fewer than 3, supplement with vertical_intel fallback descriptions but adapt them to this business's voice.
+13. About section: lift 1–2 phrases from the scraped About copy verbatim (in quotes if appropriate). Do NOT invent biography.
+14. Testimonials: if present, render 2 max, verbatim, with a generic attribution like "Verified Google review" (never fabricate reviewer names).
+15. Footer: copyright year MUST be ${i.current_year} (not any other year).
+16. No em-dashes (—) or en-dashes (–) anywhere in visible text. Use commas or periods instead.
+17. No "Lorem ipsum". No placeholder text. Every string is grounded in the business.
+18. No external JS. CSS goes in a single <style> block in <head>. One optional small inline script is fine for nav toggle if needed.
+19. Minimum document length: 8000 characters. Aim for a full, rich page.
+20. No raw URLs from other websites (stock photos). Only use URLs listed in <real_assets> or Google Fonts.
+</hard_requirements>
 
-Content specificity (these matter — the owner will recognize their site):
-- Use the actual language from the About section above (not invented marketing copy). Lift 1–2 phrases verbatim where natural.
-- Services grid: prefer the scraped services list — use exactly those names. Only fall back to the template's suggested services if the scraped list is empty.
-- If testimonials are present, include 1–2 verbatim inside a <section id="testimonials"> (social-proof block). Do NOT fabricate testimonials.
-- The hero headline should reference either the business's niche, city, or a distinctive phrase from the About copy — never generic filler like "Welcome to our business".
+<quality_bar>
+- The owner should recognize their own content instantly — their images, their language, their services, their palette.
+- It should feel like an award-winning small-studio redesign, not a Squarespace template.
+- Whitespace, typography, and imagery hierarchy matter. Don't cram.
+- If there's a hero video, it should autoplay muted, cover the hero, with a subtle dark overlay so text is readable.
+- Do NOT use emoji icons unless they match the niche tone. Prefer clean inline SVG or none.
+</quality_bar>
 
 Begin output with <!DOCTYPE html>.`,
 };

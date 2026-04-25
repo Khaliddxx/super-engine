@@ -1,0 +1,1 @@
+ALTER TABLE "prospects" ADD COLUMN "scraped_assets" jsonb;

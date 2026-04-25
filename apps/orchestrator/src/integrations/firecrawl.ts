@@ -25,8 +25,8 @@ export async function scrape(url: string, opts: ScrapeOptions = {}): Promise<Scr
       url,
       formats: ["markdown", "html"],
       onlyMainContent: false,
-      waitFor: opts.waitFor ?? 1500,
-      timeout: opts.timeout ?? 20000,
+      waitFor: opts.waitFor ?? 2500,
+      timeout: opts.timeout ?? 25000,
     }),
   });
   if (!res.ok) {
@@ -369,5 +369,224 @@ export function extractRichSiteInfo(results: ScrapeResult[]): RichSiteInfo {
     copyrightYear,
     totalTextLength,
     pagesScraped,
+  };
+}
+
+// ─────────────────────────────────────────────
+//  Asset extraction — real images, videos, logo, brand palette, fonts
+//  Drives the "use their assets, not lame templates" redesign.
+// ─────────────────────────────────────────────
+
+export interface ScrapedAssets {
+  logo: string | null;
+  heroImage: string | null;
+  heroVideo: string | null;
+  images: string[]; // ranked, de-duped, absolute URLs
+  videos: string[]; // absolute URLs to mp4/webm/youtube/vimeo
+  ogImage: string | null;
+  favicon: string | null;
+  brandColors: string[]; // hex strings extracted from inline style / css
+  brandFonts: string[]; // font-family names observed in <link> and inline styles
+  socials: { facebook?: string; instagram?: string; linkedin?: string; youtube?: string; twitter?: string };
+}
+
+const IMG_BAD_PATTERNS = [
+  /\/1x1\./i, /blank\./i, /spacer\./i, /pixel\./i,
+  /data:image\/gif;base64,R0lGOD/i, // 1x1 trackers
+  /googletagmanager/i, /facebook\.com\/tr/i, /doubleclick/i,
+  /\.svg\?#/i,
+];
+
+function absolutize(u: string, base: string): string | null {
+  try {
+    const abs = new URL(u, base).toString();
+    if (!/^https?:/i.test(abs)) return null;
+    return abs;
+  } catch {
+    return null;
+  }
+}
+
+function uniqueKeep<T>(arr: T[]): T[] {
+  return [...new Set(arr)];
+}
+
+function extractImagesFromHtml(html: string, baseUrl: string): string[] {
+  const out: string[] = [];
+  for (const m of html.matchAll(/<img\s+[^>]*?src\s*=\s*["']([^"']+)["'][^>]*>/gi)) {
+    const u = absolutize(m[1]!, baseUrl);
+    if (!u) continue;
+    if (IMG_BAD_PATTERNS.some((re) => re.test(u))) continue;
+    out.push(u);
+  }
+  for (const m of html.matchAll(/<source\s+[^>]*?srcset\s*=\s*["']([^"']+)["'][^>]*>/gi)) {
+    const firstCandidate = m[1]!.split(",")[0]?.trim().split(/\s+/)[0];
+    if (!firstCandidate) continue;
+    const u = absolutize(firstCandidate, baseUrl);
+    if (u && !IMG_BAD_PATTERNS.some((re) => re.test(u))) out.push(u);
+  }
+  // background-image: url(...)
+  for (const m of html.matchAll(/background(?:-image)?\s*:\s*url\(["']?([^"')]+)["']?\)/gi)) {
+    const u = absolutize(m[1]!, baseUrl);
+    if (u && !IMG_BAD_PATTERNS.some((re) => re.test(u))) out.push(u);
+  }
+  return uniqueKeep(out);
+}
+
+function extractVideosFromHtml(html: string, baseUrl: string): string[] {
+  const out: string[] = [];
+  for (const m of html.matchAll(/<video\s+[^>]*?src\s*=\s*["']([^"']+)["']/gi)) {
+    const u = absolutize(m[1]!, baseUrl);
+    if (u) out.push(u);
+  }
+  for (const m of html.matchAll(/<video[\s\S]*?<source\s+[^>]*?src\s*=\s*["']([^"']+\.(?:mp4|webm))["']/gi)) {
+    const u = absolutize(m[1]!, baseUrl);
+    if (u) out.push(u);
+  }
+  for (const m of html.matchAll(
+    /<iframe\s+[^>]*?src\s*=\s*["']([^"']*(?:youtube\.com|youtu\.be|vimeo\.com|player\.vimeo\.com)[^"']*)["']/gi,
+  )) {
+    const u = absolutize(m[1]!, baseUrl);
+    if (u) out.push(u);
+  }
+  return uniqueKeep(out);
+}
+
+function extractLogo(html: string, baseUrl: string): string | null {
+  const re = /<img\s+[^>]*?(?:class|id|alt)\s*=\s*["'][^"']*(?:logo|brand|site-logo)[^"']*["'][^>]*?src\s*=\s*["']([^"']+)["']/i;
+  const m1 = re.exec(html);
+  if (m1) return absolutize(m1[1]!, baseUrl);
+  const re2 = /<img\s+[^>]*?src\s*=\s*["']([^"']+)["'][^>]*?(?:class|id|alt)\s*=\s*["'][^"']*(?:logo|brand|site-logo)[^"']*["']/i;
+  const m2 = re2.exec(html);
+  if (m2) return absolutize(m2[1]!, baseUrl);
+  return null;
+}
+
+function extractOgImage(html: string, baseUrl: string): string | null {
+  const m = /<meta\s+[^>]*?property\s*=\s*["']og:image["'][^>]*?content\s*=\s*["']([^"']+)["']/i.exec(html)
+    ?? /<meta\s+[^>]*?content\s*=\s*["']([^"']+)["'][^>]*?property\s*=\s*["']og:image["']/i.exec(html);
+  if (m) return absolutize(m[1]!, baseUrl);
+  return null;
+}
+
+function extractFavicon(html: string, baseUrl: string): string | null {
+  const m = /<link\s+[^>]*?rel\s*=\s*["'](?:icon|shortcut icon|apple-touch-icon)["'][^>]*?href\s*=\s*["']([^"']+)["']/i.exec(html);
+  if (m) return absolutize(m[1]!, baseUrl);
+  return null;
+}
+
+function extractHeroMedia(
+  html: string,
+  images: string[],
+  videos: string[],
+): { heroImage: string | null; heroVideo: string | null } {
+  // Prefer the first <video> that appears before the first </section> close
+  let heroVideo: string | null = null;
+  const videoTagMatch = /<video[\s\S]*?<\/video>/i.exec(html);
+  if (videoTagMatch && videos.length) {
+    heroVideo = videos[0] ?? null;
+  }
+  let heroImage: string | null = null;
+  for (const img of images) {
+    const idx = html.indexOf(img.split("?")[0]!);
+    if (idx !== -1 && idx < 6000) {
+      heroImage = img;
+      break;
+    }
+  }
+  if (!heroImage && images[0]) heroImage = images[0];
+  return { heroImage, heroVideo };
+}
+
+function extractBrandColors(html: string): string[] {
+  const hexes = new Set<string>();
+  for (const m of html.matchAll(/#([0-9a-f]{6}|[0-9a-f]{3})\b/gi)) {
+    const h = m[0].toLowerCase();
+    // Ignore pure black/white and near-gray defaults
+    if (["#000", "#000000", "#fff", "#ffffff", "#ccc", "#cccccc", "#eee", "#eeeeee"].includes(h)) continue;
+    hexes.add(h.length === 4 ? `#${h[1]}${h[1]}${h[2]}${h[2]}${h[3]}${h[3]}` : h);
+  }
+  // Rank by frequency of appearance in html
+  const ranked = [...hexes]
+    .map((h) => ({ h, n: (html.match(new RegExp(h.replace("#", "\\#"), "gi")) || []).length }))
+    .sort((a, b) => b.n - a.n)
+    .map((r) => r.h);
+  return ranked.slice(0, 6);
+}
+
+function extractBrandFonts(html: string): string[] {
+  const fonts = new Set<string>();
+  // Google Fonts links
+  for (const m of html.matchAll(/fonts\.googleapis\.com\/css2?\?[^"']*family=([^"'&:]+)/gi)) {
+    const name = decodeURIComponent(m[1]!).replace(/\+/g, " ").trim();
+    if (name) fonts.add(name);
+  }
+  // font-family: "Name", ...
+  for (const m of html.matchAll(/font-family\s*:\s*([^;"'{}<>]+)[;"']/gi)) {
+    const first = m[1]!.split(",")[0]!.replace(/['"]/g, "").trim();
+    if (first && !/^(?:serif|sans-serif|monospace|cursive|system-ui|-apple-system|inherit)$/i.test(first)) {
+      fonts.add(first);
+    }
+  }
+  return [...fonts].slice(0, 6);
+}
+
+function extractSocials(html: string): ScrapedAssets["socials"] {
+  const out: ScrapedAssets["socials"] = {};
+  const patterns: Array<[keyof ScrapedAssets["socials"], RegExp]> = [
+    ["facebook", /https?:\/\/(?:www\.)?facebook\.com\/[A-Za-z0-9._-]+/i],
+    ["instagram", /https?:\/\/(?:www\.)?instagram\.com\/[A-Za-z0-9._-]+/i],
+    ["linkedin", /https?:\/\/(?:[a-z]{2,3}\.)?linkedin\.com\/(?:company|in)\/[A-Za-z0-9._-]+/i],
+    ["youtube", /https?:\/\/(?:www\.)?youtube\.com\/(?:c|channel|user|@)[A-Za-z0-9._-]+/i],
+    ["twitter", /https?:\/\/(?:www\.)?(?:twitter|x)\.com\/[A-Za-z0-9._-]+/i],
+  ];
+  for (const [k, re] of patterns) {
+    const m = re.exec(html);
+    if (m) out[k] = m[0];
+  }
+  return out;
+}
+
+/** Extract asset URLs and brand tokens from a site scrape. */
+export function extractAssets(results: ScrapeResult[]): ScrapedAssets {
+  if (results.length === 0) {
+    return {
+      logo: null, heroImage: null, heroVideo: null,
+      images: [], videos: [], ogImage: null, favicon: null,
+      brandColors: [], brandFonts: [], socials: {},
+    };
+  }
+  const home = results[0]!;
+  const html = home.html ?? "";
+  const base = home.url;
+
+  const allImages: string[] = [];
+  const allVideos: string[] = [];
+  for (const r of results) {
+    allImages.push(...extractImagesFromHtml(r.html ?? "", r.url));
+    allVideos.push(...extractVideosFromHtml(r.html ?? "", r.url));
+  }
+
+  const images = uniqueKeep(allImages).slice(0, 30);
+  const videos = uniqueKeep(allVideos).slice(0, 10);
+  const logo = extractLogo(html, base);
+  const ogImage = extractOgImage(html, base);
+  const favicon = extractFavicon(html, base);
+  const { heroImage, heroVideo } = extractHeroMedia(html, images, videos);
+  const brandColors = extractBrandColors(html);
+  const brandFonts = extractBrandFonts(html);
+  const socials = extractSocials(html);
+
+  return {
+    logo,
+    heroImage: heroImage ?? ogImage,
+    heroVideo,
+    images,
+    videos,
+    ogImage,
+    favicon,
+    brandColors,
+    brandFonts,
+    socials,
   };
 }

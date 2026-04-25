@@ -1,6 +1,5 @@
 import type { FastifyInstance, FastifyPluginOptions } from "fastify";
 import {
-  and,
   desc,
   eq,
   type DbClient,
@@ -14,6 +13,7 @@ import { sendChatMessage, startChat } from "../../integrations/unipile.js";
 import { env } from "../../lib/env.js";
 import { transition } from "../../modules/transitions.js";
 import { notify } from "../../integrations/slack.js";
+import { logger } from "../../lib/logger.js";
 
 interface Opts extends FastifyPluginOptions {
   db: () => DbClient;
@@ -24,10 +24,10 @@ const priorityRank: Record<string, number> = { high: 0, medium: 1, low: 2 };
 export async function queueRoutes(app: FastifyInstance, opts: Opts): Promise<void> {
   app.addHook("onRequest", requireAuth);
 
-  // List pending triage cards
+  // List pending triage cards + redesign-review cards (REDESIGNED prospects)
   app.get("/", async () => {
     const db = opts.db();
-    const rows = await db
+    const triageRows = await db
       .select({
         id: triage.id,
         status: triage.status,
@@ -53,13 +53,100 @@ export async function queueRoutes(app: FastifyInstance, opts: Opts): Promise<voi
       .where(eq(triage.status, "pending"))
       .orderBy(desc(triage.createdAt));
 
-    rows.sort(
+    triageRows.sort(
       (a, b) =>
         (priorityRank[a.priority ?? "low"] ?? 2) - (priorityRank[b.priority ?? "low"] ?? 2) ||
         new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
     );
-    return { items: rows };
+
+    const items = triageRows.map((r) => ({ type: "triage" as const, ...r }));
+
+    // Redesign-review cards: prospects in REDESIGNED state need a human eyeball
+    // before they advance to APPROVED_TO_SEND. Surfacing them in the same queue
+    // as triage keeps the operator loop in one place.
+    const reviewRows = await db
+      .select({
+        id: prospects.id,
+        businessName: prospects.businessName,
+        niche: prospects.niche,
+        city: prospects.city,
+        website: prospects.website,
+        screenshotUrl: prospects.screenshotUrl,
+        redesignHtmlUrl: prospects.redesignHtmlUrl,
+        linkedinUrl: prospects.linkedinUrl,
+        qualificationIssues: prospects.qualificationIssues,
+        qualificationScore: prospects.qualificationScore,
+        variantPalette: prospects.variantPalette,
+        variantLayout: prospects.variantLayout,
+        redesignDeployedAt: prospects.redesignDeployedAt,
+        updatedAt: prospects.updatedAt,
+      })
+      .from(prospects)
+      .where(eq(prospects.state, "REDESIGNED"))
+      .orderBy(desc(prospects.updatedAt))
+      .limit(50);
+
+    const reviewItems = reviewRows.map((r) => ({
+      type: "review_redesign" as const,
+      id: `review:${r.id}`,
+      prospectId: r.id,
+      status: "pending" as const,
+      createdAt: r.redesignDeployedAt ?? r.updatedAt,
+      businessName: r.businessName,
+      niche: r.niche,
+      city: r.city,
+      website: r.website,
+      screenshotUrl: r.screenshotUrl,
+      redesignHtmlUrl: r.redesignHtmlUrl,
+      linkedinUrl: r.linkedinUrl,
+      qualificationIssues: r.qualificationIssues ?? [],
+      qualificationScore: r.qualificationScore,
+      variantPalette: r.variantPalette,
+      variantLayout: r.variantLayout,
+    }));
+
+    return { items: [...reviewItems, ...items] };
   });
+
+  // Approve a redesign review card → APPROVED_TO_SEND
+  app.post<{ Params: { prospectId: string } }>("/review/:prospectId/approve", async (req, reply) => {
+    const db = opts.db();
+    const [p] = await db.select().from(prospects).where(eq(prospects.id, req.params.prospectId));
+    if (!p) return reply.status(404).send({ error: "not_found" });
+    if (p.state !== "REDESIGNED") return reply.status(400).send({ error: "not_reviewable", state: p.state });
+    await transition({
+      db,
+      prospectId: p.id,
+      from: p.state as any,
+      to: "APPROVED_TO_SEND",
+      reason: "operator_review_approved",
+      triggeredBy: "operator",
+    });
+    logger.info({ prospectId: p.id }, "redesign approved from queue");
+    return { ok: true };
+  });
+
+  // Reject a redesign review card → REJECTED (operator_review_rejected)
+  app.post<{ Params: { prospectId: string }; Body: { reason?: string } }>(
+    "/review/:prospectId/reject",
+    async (req, reply) => {
+      const db = opts.db();
+      const [p] = await db.select().from(prospects).where(eq(prospects.id, req.params.prospectId));
+      if (!p) return reply.status(404).send({ error: "not_found" });
+      if (p.state !== "REDESIGNED") return reply.status(400).send({ error: "not_reviewable", state: p.state });
+      const reason = req.body?.reason ?? "operator_review_rejected";
+      await transition({
+        db,
+        prospectId: p.id,
+        from: p.state as any,
+        to: "REJECTED",
+        reason,
+        triggeredBy: "operator",
+        patch: { rejectionReason: reason },
+      });
+      return { ok: true };
+    },
+  );
 
   // Get a single triage card with full thread
   app.get<{ Params: { id: string } }>("/:id", async (req, reply) => {

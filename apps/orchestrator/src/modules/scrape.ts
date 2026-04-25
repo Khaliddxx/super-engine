@@ -8,6 +8,68 @@ export interface ScrapeSummary {
   inserted: number;
   skippedNoWebsite: number;
   skippedDuplicateDomain: number;
+  skippedChainDomain: number;
+}
+
+// Domains that are chain/franchise properties — the website is corporate, not local.
+// Scraping these wastes Firecrawl credits and the prospect has no decision-making power.
+const CHAIN_DOMAIN_SUBSTRINGS = [
+  "marriott",
+  "hilton",
+  "hyatt",
+  "ihg",
+  "accor",
+  "radisson",
+  "wyndham",
+  "choicehotels",
+  "bestwestern",
+  "fourseasons",
+  "ritzcarlton",
+  "intercontinental",
+  "holiday-inn",
+  "holidayinn",
+  "crowneplaza",
+  "doubletree",
+  "hampton",
+  "residenceinn",
+  "courtyard",
+  "novotel",
+  "ibis",
+  "mercure",
+  "sofitel",
+  "pullman",
+  "trivago",
+  "booking.com",
+  "expedia",
+  "hotels.com",
+  "agoda",
+  "tripadvisor",
+  "airbnb",
+  "vrbo",
+  "mcdonalds",
+  "starbucks",
+  "subway.com",
+  "dominos",
+  "pizzahut",
+  "kfc.com",
+  "burgerking",
+  "wendys",
+  "tacobell",
+  "chipotle",
+  "dunkin",
+  "costa.co",
+  "facebook.com",
+  "instagram.com",
+  "linkedin.com",
+  "google.com",
+  "business.site",
+  "yelp.com",
+  "yellowpages",
+];
+
+function isChainDomain(domain: string): boolean {
+  const d = domain.toLowerCase();
+  return CHAIN_DOMAIN_SUBSTRINGS.some((c) => d.includes(c));
 }
 
 function extractDomain(url: string): string | null {
@@ -46,6 +108,7 @@ export async function scrapeProspectsForCampaign(
     inserted: 0,
     skippedNoWebsite: 0,
     skippedDuplicateDomain: 0,
+    skippedChainDomain: 0,
   };
 
   for (const p of results) {
@@ -56,6 +119,10 @@ export async function scrapeProspectsForCampaign(
     const domain = extractDomain(p.website);
     if (!domain) {
       summary.skippedNoWebsite++;
+      continue;
+    }
+    if (isChainDomain(domain)) {
+      summary.skippedChainDomain++;
       continue;
     }
     if (existingDomains.has(domain)) {

@@ -60,7 +60,7 @@ export interface ScreenshotOptions {
 export async function screenshot(siteUrl: string, opts: ScreenshotOptions = {}): Promise<string> {
   const width = opts.width ?? 1280;
   const height = opts.height ?? 900;
-  const api = `https://api.microlink.io/?url=${encodeURIComponent(siteUrl)}&screenshot=true&meta=false&viewport.width=${width}&viewport.height=${height}&waitFor=1500`;
+  const api = `https://api.microlink.io/?url=${encodeURIComponent(siteUrl)}&screenshot=true&meta=false&viewport.width=${width}&viewport.height=${height}&waitFor=3500&waitUntil=networkidle0`;
   const res = await fetch(api);
   if (!res.ok) throw new Error(`Screenshot failed: ${res.status}`);
   const data = (await res.json()) as { status: string; data?: { screenshot?: { url?: string } } };

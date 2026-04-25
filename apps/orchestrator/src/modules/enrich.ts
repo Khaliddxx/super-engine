@@ -1,6 +1,13 @@
 import { prospects, type DbClient, type Prospect } from "@super-engine/db";
 import { domainSearch, HunterAuthError, pickBestEmail, pickLinkedInUrl } from "../integrations/hunter.js";
-import { scrape, scrapeSite, extractSiteInfo, extractRichSiteInfo } from "../integrations/firecrawl.js";
+import {
+  scrape,
+  scrapeSite,
+  extractSiteInfo,
+  extractRichSiteInfo,
+  extractAssets,
+  type ScrapedAssets,
+} from "../integrations/firecrawl.js";
 import { RejectProspectError } from "../lib/errors.js";
 import { transition } from "./transitions.js";
 import { logger } from "../lib/logger.js";
@@ -31,6 +38,7 @@ export async function enrichProspect(db: DbClient, prospect: Prospect): Promise<
     let aboutCopy: string | null = null;
     let testimonials: string[] | null = null;
     let scrapedPagesMeta: Array<{ url: string; title: string; length: number }> | null = null;
+    let scrapedAssets: ScrapedAssets | null = null;
     let detectedYear: number | null = null;
     let totalLength = 0;
 
@@ -43,9 +51,17 @@ export async function enrichProspect(db: DbClient, prospect: Prospect): Promise<
       detectedYear = rich.copyrightYear;
       totalLength = rich.totalTextLength;
       scrapedPagesMeta = rich.pagesScraped;
+      scrapedAssets = extractAssets(siteResults);
       logger.info(
-        { prospectId: prospect.id, pages: rich.pagesScraped.length, chars: totalLength },
-        "enrich: rich site info",
+        {
+          prospectId: prospect.id,
+          pages: rich.pagesScraped.length,
+          chars: totalLength,
+          images: scrapedAssets.images.length,
+          videos: scrapedAssets.videos.length,
+          colors: scrapedAssets.brandColors.length,
+        },
+        "enrich: rich site info + assets",
       );
     } else {
       // Fallback to single homepage scrape
@@ -94,6 +110,7 @@ export async function enrichProspect(db: DbClient, prospect: Prospect): Promise<
         scrapedAboutCopy: aboutCopy,
         scrapedTestimonials: testimonials,
         scrapedPages: scrapedPagesMeta as any,
+        scrapedAssets: scrapedAssets as any,
         detectedYear,
       },
     });

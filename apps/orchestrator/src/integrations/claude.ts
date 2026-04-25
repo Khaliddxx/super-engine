@@ -11,10 +11,14 @@ export function claude(): Anthropic {
 
 export const CLAUDE_MODEL = () => env().CLAUDE_MODEL;
 
-export async function claudeText(prompt: string, opts: { maxTokens?: number; model?: string } = {}): Promise<string> {
+export async function claudeText(
+  prompt: string,
+  opts: { maxTokens?: number; model?: string; temperature?: number } = {},
+): Promise<string> {
   const res = await claude().messages.create({
     model: opts.model ?? CLAUDE_MODEL(),
     max_tokens: opts.maxTokens ?? 4000,
+    ...(typeof opts.temperature === "number" ? { temperature: opts.temperature } : {}),
     messages: [{ role: "user", content: prompt }],
   });
   const block = res.content[0];
