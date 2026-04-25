@@ -5,7 +5,7 @@ import Link from "next/link";
 import { motion, useMotionValue, useTransform, type PanInfo } from "framer-motion";
 import {
   Calendar, Flame, MessageSquare, AlertCircle, BellOff, RefreshCw, Check, X, Edit3,
-  Sparkles, Rocket, ExternalLink, Eye,
+  Sparkles, Rocket, ExternalLink, Eye, RotateCw, AlertTriangle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "../../../lib/api";
@@ -47,8 +47,10 @@ type ReviewItem = {
   linkedinUrl: string | null;
   qualificationIssues: string[];
   qualificationScore: string | null;
+  qualificationReasoning: string | null;
   variantPalette: string | null;
   variantLayout: string | null;
+  assetsSummary?: { imageCount: number; hasLogo: boolean; hasHero: boolean };
 };
 
 type QueueItem = TriageItem | ReviewItem;
@@ -116,6 +118,16 @@ export default function QueuePage() {
     },
   });
 
+  const regenerateReview = useMutation({
+    mutationFn: (prospectId: string) =>
+      api(`/api/pipeline/${prospectId}/regenerate-full`, { method: "POST", body: {} }),
+    onSuccess: () => {
+      toast.success("Re-running enrich + redesign — refresh in ~90s");
+      qc.invalidateQueries({ queryKey: ["queue"] });
+    },
+    onError: (e: any) => toast.error(e.message ?? "Regenerate failed"),
+  });
+
   const seedMutation = useMutation({
     mutationFn: () => api<{ created: number }>("/api/queue/seed-demo", { method: "POST", body: { count: 3 } }),
     onSuccess: (d) => {
@@ -173,6 +185,8 @@ export default function QueuePage() {
               item={item}
               onApprove={() => approveReview.mutate(item.prospectId)}
               onReject={() => rejectReview.mutate(item.prospectId)}
+              onRegenerate={() => regenerateReview.mutate(item.prospectId)}
+              isRegenerating={regenerateReview.isPending && regenerateReview.variables === item.prospectId}
             />
           ) : (
             <SwipeCard
@@ -188,14 +202,23 @@ export default function QueuePage() {
   );
 }
 
+function microlinkShot(url: string): string {
+  // Direct image endpoint that redirects to a fresh screenshot; survives re-renders.
+  return `https://api.microlink.io/?url=${encodeURIComponent(url)}&screenshot=true&meta=false&embed=screenshot.url&viewport.width=414&viewport.height=320&waitFor=2500`;
+}
+
 function ReviewCard({
   item,
   onApprove,
   onReject,
+  onRegenerate,
+  isRegenerating,
 }: {
   item: ReviewItem;
   onApprove: () => void;
   onReject: () => void;
+  onRegenerate: () => void;
+  isRegenerating: boolean;
 }) {
   const x = useMotionValue(0);
   const rotate = useTransform(x, [-200, 0, 200], [-6, 0, 6]);
@@ -207,6 +230,10 @@ function ReviewCard({
     if (dx > 140) onApprove();
     else if (dx < -140) onReject();
   }
+
+  const currentShot = item.screenshotUrl ?? (item.website ? microlinkShot(item.website) : null);
+  const assetsOk = (item.assetsSummary?.imageCount ?? 0) >= 3;
+  const issuesToShow = item.qualificationIssues ?? [];
 
   return (
     <motion.div style={{ x, rotate }} className="relative">
@@ -244,6 +271,14 @@ function ReviewCard({
               {item.variantLayout && (
                 <span className="pill border border-border text-muted bg-surface2">{item.variantLayout}</span>
               )}
+              {!assetsOk && (
+                <span
+                  className="pill border border-amber-500/30 bg-amber-500/10 text-amber-300"
+                  title="Fewer than 3 images were extracted from the site — regenerate to re-scrape assets"
+                >
+                  <AlertTriangle className="w-3 h-3" /> no assets
+                </span>
+              )}
             </div>
             <h3 className="mt-2 font-medium truncate">{item.businessName}</h3>
             <p className="text-xs text-muted">
@@ -260,16 +295,43 @@ function ReviewCard({
           </Link>
         </div>
 
+        {issuesToShow.length > 0 && (
+          <div className="mx-4 mt-3 rounded-xl border border-amber-500/30 bg-amber-500/5 p-3">
+            <p className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-amber-300 font-medium">
+              <AlertTriangle className="w-3.5 h-3.5" /> Why this site is bad
+            </p>
+            <ul className="mt-1.5 text-[12.5px] text-fg/90 space-y-1">
+              {issuesToShow.map((iss, i) => (
+                <li key={i} className="flex gap-2">
+                  <span className="text-amber-400 shrink-0">·</span>
+                  <span>{iss}</span>
+                </li>
+              ))}
+            </ul>
+            {item.qualificationReasoning && (
+              <p className="mt-2 text-[11.5px] text-muted leading-snug">{item.qualificationReasoning}</p>
+            )}
+          </div>
+        )}
+
         <div className="grid grid-cols-2 gap-2 px-4 pt-3">
           <figure className="space-y-1">
             <figcaption className="text-[10px] uppercase tracking-wider text-muted">Current</figcaption>
             <div className="aspect-[4/3] rounded-xl overflow-hidden bg-surface2 border border-border">
-              {item.screenshotUrl ? (
+              {currentShot ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
-                  src={item.screenshotUrl}
+                  src={currentShot}
                   alt="current site"
                   className="w-full h-full object-cover object-top"
+                  referrerPolicy="no-referrer"
+                  onError={(e) => {
+                    // If the cached microlink URL is dead, swap to a fresh one via website URL
+                    const el = e.currentTarget;
+                    if (item.website && el.src !== microlinkShot(item.website)) {
+                      el.src = microlinkShot(item.website);
+                    }
+                  }}
                 />
               ) : (
                 <div className="w-full h-full flex items-center justify-center text-[11px] text-muted">no screenshot</div>
@@ -290,16 +352,17 @@ function ReviewCard({
 
           <figure className="space-y-1">
             <figcaption className="text-[10px] uppercase tracking-wider text-accent">Redesign</figcaption>
-            <div className="aspect-[4/3] rounded-xl overflow-hidden bg-white border border-accent/30">
+            <div className="aspect-[4/3] rounded-xl overflow-hidden bg-white border border-accent/30 relative">
               {item.redesignHtmlUrl ? (
                 <iframe
                   src={item.redesignHtmlUrl}
+                  title={`redesign preview for ${item.businessName}`}
                   className="w-full h-full pointer-events-none"
-                  sandbox="allow-same-origin allow-scripts"
+                  sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
                   scrolling="no"
                   loading="lazy"
                   referrerPolicy="no-referrer"
-                  style={{ transform: "scale(0.4)", transformOrigin: "top left", width: "250%", height: "250%" }}
+                  style={{ transform: "scale(0.35)", transformOrigin: "top left", width: "285%", height: "285%" }}
                 />
               ) : (
                 <div className="w-full h-full flex items-center justify-center text-[11px] text-muted">no preview</div>
@@ -319,18 +382,20 @@ function ReviewCard({
           </figure>
         </div>
 
-        {item.qualificationIssues?.length > 0 && (
-          <div className="px-4 pt-3">
-            <p className="text-[10px] uppercase tracking-wider text-muted mb-1">Top issues AI flagged</p>
-            <ul className="text-[12px] text-fg/80 space-y-0.5">
-              {item.qualificationIssues.slice(0, 3).map((iss, i) => (
-                <li key={i} className="flex gap-1">
-                  <span className="text-accent">·</span> <span>{iss}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
+        <div className="px-4 pt-3">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onRegenerate();
+            }}
+            disabled={isRegenerating}
+            className="w-full text-xs inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-surface2 border border-border hover:bg-surface3 disabled:opacity-50"
+            title="Re-run enrich (to re-scrape assets) then regenerate the redesign with the current prompt"
+          >
+            <RotateCw className={`w-3.5 h-3.5 ${isRegenerating ? "animate-spin" : ""}`} />
+            {isRegenerating ? "Regenerating…" : "Regenerate with fresh assets"}
+          </button>
+        </div>
 
         <div className="flex gap-2 p-4 pt-3">
           <button onClick={onReject} className="btn-danger flex-1 text-xs">

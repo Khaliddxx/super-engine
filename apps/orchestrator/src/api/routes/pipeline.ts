@@ -3,6 +3,7 @@ import { and, desc, eq, gte, type DbClient, prospects, campaigns, deployments } 
 import { requireAuth } from "../auth-guard.js";
 import { transition } from "../../modules/transitions.js";
 import { redesignProspect } from "../../modules/redesign.js";
+import { enrichProspect } from "../../modules/enrich.js";
 import { sendLinkedInInviteForProspect, draftInviteNote } from "../../modules/send.js";
 
 /** Translate a `since` token like "today" | "7d" | "30d" | "all" into a Date threshold. */
@@ -216,7 +217,6 @@ export async function pipelineRoutes(app: FastifyInstance, opts: Opts): Promise<
     if (!["QUALIFIED", "REDESIGNED"].includes(p.state)) {
       return reply.status(400).send({ error: "wrong_state", state: p.state });
     }
-    // Revert to QUALIFIED so the scheduler (or this immediate call) regenerates
     if (p.state !== "QUALIFIED") {
       await transition({
         db,
@@ -230,6 +230,57 @@ export async function pipelineRoutes(app: FastifyInstance, opts: Opts): Promise<
     const [refreshed] = await db.select().from(prospects).where(eq(prospects.id, p.id));
     if (!refreshed) return reply.status(404).send({ error: "not_found_after_transition" });
     await redesignProspect(db, refreshed);
+    return { ok: true };
+  });
+
+  /**
+   * Full regenerate: re-ENRICH (to backfill scrapedAssets with logo/hero
+   * images/brand colors/fonts) and then re-REDESIGN with the current V2
+   * prompt. Use this on prospects redesigned before asset extraction shipped.
+   * Safe to call on REDESIGNED, APPROVED_TO_SEND, or REJECTED prospects.
+   */
+  app.post<{ Params: { id: string } }>("/:id/regenerate-full", async (req, reply) => {
+    const db = opts.db();
+    const [p] = await db.select().from(prospects).where(eq(prospects.id, req.params.id));
+    if (!p) return reply.status(404).send({ error: "not_found" });
+
+    // Put the prospect into QUALIFIED so enrichProspect's transition to ENRICHED is valid,
+    // and to signal to anyone watching the pipeline that a full regenerate is in progress.
+    await transition({
+      db,
+      prospectId: p.id,
+      from: p.state as any,
+      to: "QUALIFIED",
+      reason: "regenerate_full_requested",
+      triggeredBy: "operator",
+      patch: { rejectionReason: null },
+    });
+
+    const [q] = await db.select().from(prospects).where(eq(prospects.id, p.id));
+    if (!q) return reply.status(404).send({ error: "not_found_after_transition" });
+
+    try {
+      await enrichProspect(db, q);
+    } catch (err) {
+      return reply.status(502).send({ error: "enrich_failed", detail: String(err) });
+    }
+
+    const [r] = await db.select().from(prospects).where(eq(prospects.id, p.id));
+    if (!r) return reply.status(404).send({ error: "not_found_after_enrich" });
+    if (r.state !== "ENRICHED") {
+      // enrichProspect transitioned to REJECTED (e.g. no_contact / domain_parked) — surface it.
+      return reply.status(422).send({
+        error: "enrich_rejected",
+        state: r.state,
+        rejectionReason: r.rejectionReason,
+      });
+    }
+
+    try {
+      await redesignProspect(db, r);
+    } catch (err) {
+      return reply.status(502).send({ error: "redesign_failed", detail: String(err) });
+    }
     return { ok: true };
   });
 }

@@ -45,11 +45,11 @@ function safe(s: string | null | undefined): string {
 }
 
 export const REDESIGN_PROMPT_V2 = {
-  version: "2.0",
+  version: "2.1",
   deployedAt: "2026-04-26",
-  render: (i: RedesignInput) => `You are a senior product designer building a full, production-quality website redesign for a local business.
+  render: (i: RedesignInput) => `You are a senior product designer building a full, production-quality, MOBILE-FIRST website redesign for a local business.
 This is NOT a template fill-in. It is a bespoke redesign using THE BUSINESS'S OWN ASSETS (their real photos, videos, logo, brand colors).
-The business owner will see this preview in a cold outreach message. It must feel like you actually studied their site — because you did.
+The business owner will see this preview on their phone in a cold outreach message. It must feel like you actually studied their site, because you did.
 
 <business>
 Name: ${i.name}
@@ -108,36 +108,59 @@ Phone: ${i.operator_phone}
 
 <hard_requirements>
 1. Output a SINGLE self-contained HTML document, everything inline.
-2. Begin output with exactly: <!DOCTYPE html>
-3. Output ONLY the HTML — no markdown fences, no prose, no commentary.
-4. Mobile responsive (breakpoint at 768px). Mobile-first layout.
-5. Use their real images/videos directly — do NOT render CSS gradient blocks where an image URL is available. Hero must use either heroVideo (autoplay muted loop playsinline) or heroImage as an actual media element, not a background gradient.
-6. Logo in nav: if logo URL present, use <img src="${i.assets.logo ?? ""}"> at 40px height; otherwise render the business name as a serif wordmark.
-7. Brand palette: derive CSS variables from the scraped brand colors. Map the most-used non-neutral hex to --accent. Use --bg (near-white or near-black depending on mood), --fg (high-contrast text), --muted (60% opacity fg), --surface (subtle card bg).
-8. Typography: if brand fonts were detected, import them from Google Fonts at the top of <head>. Otherwise pick a tasteful modern pairing (one serif display + one sans body).
-9. Required sections, in order: <nav>, <section id="hero">, <section id="services">, <section id="about">, <section id="gallery"> (only if 3+ images), <section id="testimonials"> (only if testimonials scraped), <section id="book">, <footer>.
-10. #book section MUST contain the agency contact above as:
-    - name text
+2. Begin output with exactly: <!DOCTYPE html>.
+3. Output ONLY the HTML. No markdown fences, no prose, no commentary.
+4. <head> MUST include: <meta charset="utf-8"> and <meta name="viewport" content="width=device-width, initial-scale=1">.
+5. MOBILE-FIRST CSS:
+   - Base styles target a 375px viewport. Desktop styles go inside @media (min-width: 768px).
+   - No fixed widths in px on containers, only max-width. Use fluid type (clamp() for h1/h2).
+   - Hero at 375px wide must have readable headline (no clipped text, no horizontal scroll).
+   - Nav collapses to a simple stack or hamburger at <768px. Never require scroll-horizontally.
+   - Tap targets are at least 44x44px.
+   - Test: if you wrote width:100vw anywhere, rewrite it. If you wrote a px width > 375 without max-width, rewrite it.
+6. USE REAL ASSETS. Do not render CSS gradient placeholder blocks when image URLs are provided.
+   - Hero section: if heroVideo present, use <video autoplay muted loop playsinline> with a subtle dark overlay for text legibility. Else if heroImage present, use <img> as a full-bleed element. Only if BOTH are absent may you do a typographic hero (oversized display headline, no fake-image gradient box).
+   - Services / about / gallery: embed at least 3 of the provided image URLs as actual <img src="..."> elements when 3+ images are available.
+   - Logo in nav: if logo URL present, use <img src="${i.assets.logo ?? ""}" alt="${i.name}"> at ~36-44px height. Else render the business name as a wordmark in the display font.
+7. BRAND PALETTE:
+   - Derive CSS variables from brandColors: map the most-used non-neutral hex to --accent.
+   - Define --bg, --fg, --muted (60% opacity fg), --surface, --accent, --accent-fg.
+   - If no brandColors were detected, use a tasteful neutral palette keyed off the niche (warm cream + charcoal for restaurants, cool slate + sage for medical, etc.).
+8. TYPOGRAPHY:
+   - If brand fonts were detected, import them from fonts.googleapis.com at the top of <head>.
+   - Else pick a considered pairing (e.g. Fraunces + Inter, Playfair Display + Nunito).
+9. LAYOUT VARIETY — DO NOT default to the standard three-equal-cards-services-grid Squarespace shape. Choose a layout that fits this business:
+   - Hospitality / venue / restaurant: full-bleed hero image, asymmetric copy, editorial feel.
+   - Medical / dental / professional: calm two-column hero, clear credentials strip, booking CTA sticky.
+   - Retail / cafe / local service: photo-driven, offer-led, strong local cue.
+10. REQUIRED SECTIONS, in order:
+    <nav>, <section id="hero">, <section id="services">, <section id="about">,
+    <section id="gallery"> (include ONLY if 3+ images available in <real_assets>),
+    <section id="testimonials"> (include ONLY if testimonials scraped),
+    <section id="book">, <footer>.
+11. #book section MUST contain the agency contact (from contact_block) as:
+    - plain name text
     - email as <a href="mailto:...">
     - phone as <a href="tel:...">
-11. Every button with class "btn-primary" must have href="#book".
-12. Services grid: prefer scraped services verbatim. If fewer than 3, supplement with vertical_intel fallback descriptions but adapt them to this business's voice.
-13. About section: lift 1–2 phrases from the scraped About copy verbatim (in quotes if appropriate). Do NOT invent biography.
-14. Testimonials: if present, render 2 max, verbatim, with a generic attribution like "Verified Google review" (never fabricate reviewer names).
-15. Footer: copyright year MUST be ${i.current_year} (not any other year).
-16. No em-dashes (—) or en-dashes (–) anywhere in visible text. Use commas or periods instead.
-17. No "Lorem ipsum". No placeholder text. Every string is grounded in the business.
-18. No external JS. CSS goes in a single <style> block in <head>. One optional small inline script is fine for nav toggle if needed.
-19. Minimum document length: 8000 characters. Aim for a full, rich page.
-20. No raw URLs from other websites (stock photos). Only use URLs listed in <real_assets> or Google Fonts.
+12. Every button with class "btn-primary" must have href="#book".
+13. Services grid: prefer scraped services verbatim. If fewer than 3, supplement with vertical_intel fallback descriptions, adapted to this business's voice.
+14. About: lift 1-2 phrases from the scraped About copy. Do NOT invent biography.
+15. Testimonials: render at most 2, verbatim, attributed as "Verified Google review" (never fabricate reviewer names).
+16. Footer copyright year MUST be ${i.current_year}. Not any other year.
+17. No em-dashes (—) or en-dashes (–) anywhere in visible text.
+18. No "Lorem ipsum". No placeholder text.
+19. No external JS. One small inline <script> only if needed for a nav toggle.
+20. Minimum document length: 9000 characters. Aim for a full, rich, editorial page.
+21. No stock image URLs from other sites. Only use URLs listed in <real_assets> or Google Fonts.
 </hard_requirements>
 
 <quality_bar>
-- The owner should recognize their own content instantly — their images, their language, their services, their palette.
-- It should feel like an award-winning small-studio redesign, not a Squarespace template.
+- The owner should recognize their own content instantly: their images, their language, their services, their palette.
+- This should feel like an award-winning small-studio redesign, not a Wix or Squarespace template.
 - Whitespace, typography, and imagery hierarchy matter. Don't cram.
-- If there's a hero video, it should autoplay muted, cover the hero, with a subtle dark overlay so text is readable.
+- If there's a hero video, it must autoplay muted loop, cover the hero, with a subtle dark overlay so headline text is readable.
 - Do NOT use emoji icons unless they match the niche tone. Prefer clean inline SVG or none.
+- No "rounded-xl card with an emoji and a sentence" stack. Vary the shapes: asymmetric splits, image-left-copy-right, full-bleed photo sections, editorial-style pull-quotes.
 </quality_bar>
 
 Begin output with <!DOCTYPE html>.`,

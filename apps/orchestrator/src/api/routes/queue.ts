@@ -76,6 +76,8 @@ export async function queueRoutes(app: FastifyInstance, opts: Opts): Promise<voi
         linkedinUrl: prospects.linkedinUrl,
         qualificationIssues: prospects.qualificationIssues,
         qualificationScore: prospects.qualificationScore,
+        qualificationReasoning: prospects.qualificationReasoning,
+        scrapedAssets: prospects.scrapedAssets,
         variantPalette: prospects.variantPalette,
         variantLayout: prospects.variantLayout,
         redesignDeployedAt: prospects.redesignDeployedAt,
@@ -86,24 +88,30 @@ export async function queueRoutes(app: FastifyInstance, opts: Opts): Promise<voi
       .orderBy(desc(prospects.updatedAt))
       .limit(50);
 
-    const reviewItems = reviewRows.map((r) => ({
-      type: "review_redesign" as const,
-      id: `review:${r.id}`,
-      prospectId: r.id,
-      status: "pending" as const,
-      createdAt: r.redesignDeployedAt ?? r.updatedAt,
-      businessName: r.businessName,
-      niche: r.niche,
-      city: r.city,
-      website: r.website,
-      screenshotUrl: r.screenshotUrl,
-      redesignHtmlUrl: r.redesignHtmlUrl,
-      linkedinUrl: r.linkedinUrl,
-      qualificationIssues: r.qualificationIssues ?? [],
-      qualificationScore: r.qualificationScore,
-      variantPalette: r.variantPalette,
-      variantLayout: r.variantLayout,
-    }));
+    const reviewItems = reviewRows.map((r) => {
+      const assets = (r.scrapedAssets as any) ?? null;
+      const imageCount = Array.isArray(assets?.images) ? assets.images.length : 0;
+      return {
+        type: "review_redesign" as const,
+        id: `review:${r.id}`,
+        prospectId: r.id,
+        status: "pending" as const,
+        createdAt: r.redesignDeployedAt ?? r.updatedAt,
+        businessName: r.businessName,
+        niche: r.niche,
+        city: r.city,
+        website: r.website,
+        screenshotUrl: r.screenshotUrl,
+        redesignHtmlUrl: r.redesignHtmlUrl,
+        linkedinUrl: r.linkedinUrl,
+        qualificationIssues: r.qualificationIssues ?? [],
+        qualificationScore: r.qualificationScore,
+        qualificationReasoning: r.qualificationReasoning,
+        variantPalette: r.variantPalette,
+        variantLayout: r.variantLayout,
+        assetsSummary: { imageCount, hasLogo: !!assets?.logo, hasHero: !!(assets?.heroImage || assets?.heroVideo) },
+      };
+    });
 
     return { items: [...reviewItems, ...items] };
   });
