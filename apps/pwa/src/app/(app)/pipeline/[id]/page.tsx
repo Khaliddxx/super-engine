@@ -6,7 +6,7 @@ import Link from "next/link";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft, ExternalLink, RefreshCw, Check, Shuffle, Send, Ban, AlertTriangle,
-  Sparkles, Eye,
+  Sparkles, Eye, RotateCw,
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "../../../../lib/api";
@@ -82,6 +82,16 @@ export default function PipelineDetailPage() {
     },
   });
 
+  const retry = useMutation({
+    mutationFn: () => api(`/api/pipeline/${id}/retry`, { method: "POST", body: {} }),
+    onSuccess: () => {
+      toast.success("Queued for retry — will re-enrich on next cycle");
+      qc.invalidateQueries({ queryKey: ["pipeline"] });
+      refetch();
+    },
+    onError: (e: any) => toast.error(e.message ?? "Retry failed"),
+  });
+
   if (isLoading || !data) return <div className="p-6 text-muted text-sm">Loading…</div>;
   const p = data.prospect;
   const isReviewable = p.state === "REDESIGNED" || p.state === "APPROVED_TO_SEND";
@@ -129,15 +139,28 @@ export default function PipelineDetailPage() {
         </div>
 
         {isRejected && (
-          <div className="card p-4 border-danger/40 bg-danger/5 space-y-1">
-            <div className="flex items-center gap-2 text-danger">
-              <AlertTriangle className="w-4 h-4" />
-              <p className="text-sm font-medium">Rejected</p>
+          <div className="card p-4 border-danger/40 bg-danger/5 space-y-3">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2 text-danger">
+                <AlertTriangle className="w-4 h-4" />
+                <p className="text-sm font-medium">Rejected</p>
+              </div>
+              <p className="text-sm text-fg/80">{p.rejectionReason ?? "(no reason recorded)"}</p>
+              {p.qualificationReasoning && (
+                <p className="text-xs text-muted mt-1">{p.qualificationReasoning}</p>
+              )}
             </div>
-            <p className="text-sm text-fg/80">{p.rejectionReason ?? "(no reason recorded)"}</p>
-            {p.qualificationReasoning && (
-              <p className="text-xs text-muted mt-1">{p.qualificationReasoning}</p>
-            )}
+            <button
+              onClick={() => retry.mutate()}
+              disabled={retry.isPending}
+              className="btn-secondary w-full"
+            >
+              <RotateCw className={`w-4 h-4 ${retry.isPending ? "animate-spin" : ""}`} />
+              {retry.isPending ? "Queueing…" : "Retry — reset to NEW"}
+            </button>
+            <p className="text-[11px] text-muted">
+              Resets state to NEW. Next run-cycle will re-enrich, qualify, and redesign from scratch — useful after fixing an integration (e.g. Hunter, Firecrawl).
+            </p>
           </div>
         )}
 

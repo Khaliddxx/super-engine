@@ -23,6 +23,16 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     if (!loading && !token) router.replace("/login");
   }, [token, loading, router]);
 
+  // Scroll to top on every route change. Next.js attempts this automatically
+  // but Framer-Motion page transitions and our sticky bottom nav sometimes
+  // cause the new page to render mid-scroll; this guarantees reset.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.scrollTo({ top: 0, behavior: "instant" as ScrollBehavior });
+    const main = document.querySelector("main");
+    if (main) main.scrollTop = 0;
+  }, [pathname]);
+
   if (loading || !token) return null;
 
   return (

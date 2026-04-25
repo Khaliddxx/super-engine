@@ -18,6 +18,13 @@ type Row = {
   qualificationIssues: string[] | null;
 };
 
+const WINDOWS: Array<{ key: string; label: string }> = [
+  { key: "today", label: "Today" },
+  { key: "7d", label: "7d" },
+  { key: "30d", label: "30d" },
+  { key: "all", label: "All" },
+];
+
 const GROUPS: Array<{ key: string; label: string; states: string[]; color: string; icon: React.FC<any> }> = [
   { key: "redesigned", label: "Redesigned — review & send", states: ["REDESIGNED"], color: "text-accent", icon: Sparkles },
   { key: "approved", label: "Approved to send", states: ["APPROVED_TO_SEND"], color: "text-yellow-400", icon: Send },
@@ -28,9 +35,10 @@ const GROUPS: Array<{ key: string; label: string; states: string[]; color: strin
 ];
 
 export default function PipelinePage() {
+  const [since, setSince] = useState<string>("30d");
   const { data, isLoading } = useQuery({
-    queryKey: ["pipeline"],
-    queryFn: () => api<{ items: Row[] }>("/api/pipeline"),
+    queryKey: ["pipeline", since],
+    queryFn: () => api<{ items: Row[] }>(`/api/pipeline?since=${since}`),
     refetchInterval: 15_000,
   });
   const [expanded, setExpanded] = useState<Record<string, boolean>>({ redesigned: true, approved: true });
@@ -38,9 +46,24 @@ export default function PipelinePage() {
 
   return (
     <div className="max-w-xl mx-auto px-4 safe-top">
-      <header className="py-4">
-        <h1 className="text-xl font-serif">Pipeline</h1>
-        <p className="text-xs text-muted">{items.length} prospects · tap a row for detail</p>
+      <header className="py-4 space-y-3">
+        <div>
+          <h1 className="text-xl font-serif">Pipeline</h1>
+          <p className="text-xs text-muted">{items.length} prospects · tap a row for detail</p>
+        </div>
+        <div className="flex gap-1 p-1 bg-surface border border-border rounded-xl w-fit">
+          {WINDOWS.map((w) => (
+            <button
+              key={w.key}
+              onClick={() => setSince(w.key)}
+              className={`px-3 py-1 text-xs rounded-lg transition-colors ${
+                since === w.key ? "bg-accent/15 text-accent" : "text-muted hover:text-fg"
+              }`}
+            >
+              {w.label}
+            </button>
+          ))}
+        </div>
       </header>
 
       {isLoading && <div className="text-muted text-sm py-10 text-center">Loading…</div>}

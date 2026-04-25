@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Play, Pause, Plus, RefreshCw, Search, MoreVertical, LogOut, Zap } from "lucide-react";
+import { Play, Pause, Plus, RefreshCw, Search, MoreVertical, LogOut, Zap, RotateCw } from "lucide-react";
 import { toast } from "sonner";
 import { useState } from "react";
 import Link from "next/link";
@@ -122,6 +122,19 @@ export default function ControlsPage() {
       toast.success("Saved");
       qc.invalidateQueries({ queryKey: ["settings"] });
     },
+  });
+
+  const retryBulk = useMutation({
+    mutationFn: (reasons: string[]) =>
+      api<{ reset: number; considered: number }>("/api/pipeline/retry-bulk", {
+        method: "POST",
+        body: { reasons, since: "30d" },
+      }),
+    onSuccess: (d) => {
+      toast.success(`Requeued ${d.reset} of ${d.considered} rejected — will re-enrich next cycle`);
+      qc.invalidateQueries({ queryKey: ["pipeline"] });
+    },
+    onError: (e: any) => toast.error(e.message ?? "Retry failed"),
   });
 
   return (
@@ -262,6 +275,34 @@ export default function ControlsPage() {
           </div>
         </section>
       )}
+
+      <section className="card p-4 space-y-2">
+        <div>
+          <h2 className="text-sm font-medium">Bulk retry</h2>
+          <p className="text-[11px] text-muted">
+            Reset rejected prospects back to NEW so they re-enrich on the next cycle. Use after fixing an
+            integration (e.g. Hunter key).
+          </p>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            onClick={() => retryBulk.mutate(["no_contact"])}
+            disabled={retryBulk.isPending}
+            className="btn-secondary text-xs"
+          >
+            <RotateCw className={`w-3.5 h-3.5 ${retryBulk.isPending ? "animate-spin" : ""}`} />
+            Retry no_contact
+          </button>
+          <button
+            onClick={() => retryBulk.mutate(["domain_parked", "site_already_good", "chain_scale"])}
+            disabled={retryBulk.isPending}
+            className="btn-secondary text-xs"
+          >
+            <RotateCw className={`w-3.5 h-3.5 ${retryBulk.isPending ? "animate-spin" : ""}`} />
+            Retry other
+          </button>
+        </div>
+      </section>
 
       {settingsQ.data && (
         <section className="card p-4 space-y-3">
