@@ -5,6 +5,7 @@ import { claudeVision, extractJson } from "../integrations/claude.js";
 import { screenshot } from "../integrations/places.js";
 import { RejectProspectError } from "../lib/errors.js";
 import { transition } from "./transitions.js";
+import { analyzeSiteStrength } from "./site-strength.js";
 import { logger } from "../lib/logger.js";
 
 const KNOWN_CHAINS = [
@@ -45,7 +46,44 @@ export async function qualifyProspect(db: DbClient, prospect: Prospect): Promise
       throw new RejectProspectError("no_website", "No website");
     }
 
-    // Step 2: vision check
+    // Step 2: structural pre-check (cheap, no Claude/Microlink credits).
+    //
+    // If the site already has a booking engine, virtual tour, deep sitemap,
+    // and a current copyright year, a one-page redesign would be WORSE than
+    // what they have. We skip it rather than propose a downgrade.
+    const strength = await analyzeSiteStrength(prospect.website).catch((e) => {
+      logger.warn({ err: String(e), prospectId: prospect.id }, "site_strength analysis failed");
+      return null;
+    });
+    if (strength?.strong) {
+      logger.info(
+        {
+          prospectId: prospect.id,
+          score: strength.score,
+          reasons: strength.reasons,
+          contentPages: strength.signals.contentPageCount,
+        },
+        "skipping: site already strong",
+      );
+      // Persist the signals before rejecting so the operator can see WHY.
+      await transition({
+        db,
+        prospectId: prospect.id,
+        from: prospect.state as any,
+        to: "REJECTED",
+        reason: "site_already_strong",
+        patch: {
+          rejectionReason: "site_already_strong",
+          qualificationReasoning: strength.reasons.join("; "),
+          qualificationIssues: ["already_modern", ...strength.reasons],
+          siteStrengthScore: String(strength.score),
+          siteStrengthSignals: strength.signals as any,
+        },
+      });
+      return;
+    }
+
+    // Step 3: vision check (only for sites that passed the structural gate).
     const shotUrl = await screenshot(prospect.website).catch((e) => {
       logger.warn({ err: String(e), prospectId: prospect.id }, "screenshot failed");
       throw new RejectProspectError("screenshot_failed", String(e));
@@ -73,6 +111,15 @@ export async function qualifyProspect(db: DbClient, prospect: Prospect): Promise
       );
     }
 
+    // Augment qualification issues with strength signals so the operator can
+    // see (in the queue card) WHY the AI flagged it + what the existing site has.
+    const enrichedIssues = [...parsed.top_issues];
+    if (strength && strength.signals.sitemapPageCount > 0) {
+      enrichedIssues.push(
+        `Site has ${strength.signals.contentPageCount} content pages (sitemap), we'll only redesign if it's thin.`,
+      );
+    }
+
     await transition({
       db,
       prospectId: prospect.id,
@@ -83,7 +130,9 @@ export async function qualifyProspect(db: DbClient, prospect: Prospect): Promise
         screenshotUrl: shotUrl,
         qualificationScore: String(parsed.score),
         qualificationReasoning: parsed.reasoning,
-        qualificationIssues: parsed.top_issues,
+        qualificationIssues: enrichedIssues,
+        siteStrengthScore: strength ? String(strength.score) : null,
+        siteStrengthSignals: (strength?.signals as any) ?? null,
       },
     });
   } catch (err) {

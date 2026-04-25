@@ -145,6 +145,12 @@ export const ServerEnvSchema = z.object({
   OPERATOR_EMAIL: z.string().email().optional().or(z.literal("")),
   OPERATOR_PHONE: z.string().optional().or(z.literal("")),
 
+  // Studio / agency overlay shown on top of the generated business site.
+  // These appear only in the floating banner, never inside the business HTML.
+  STUDIO_DISPLAY_NAME: z.string().default("Independent design studio"),
+  STUDIO_BOOKING_URL: z.string().url().optional().or(z.literal("")),
+  STUDIO_TAGLINE: z.string().default("We rebuilt this as a concept for you. Like it? 15 minutes, no pitch."),
+
   JWT_SECRET: z.string().min(16),
   OPERATOR_PASSWORD: z.string().min(4),
 

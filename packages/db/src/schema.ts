@@ -99,6 +99,9 @@ export const prospects = pgTable(
     scrapedTestimonials: text("scraped_testimonials").array(),
     scrapedPages: jsonb("scraped_pages"), // Array<{ url, title, length }>
     scrapedAssets: jsonb("scraped_assets"), // { logo, heroImage, heroVideo, images[], videos[], brandColors[], brandFonts[] }
+    scrapedSitemap: jsonb("scraped_sitemap"), // Array<{ slug, type, title, snippet, sourceUrl }>
+    siteStrengthScore: numeric("site_strength_score", { precision: 4, scale: 1 }),
+    siteStrengthSignals: jsonb("site_strength_signals"),
     detectedYear: integer("detected_year"),
 
     // qualification

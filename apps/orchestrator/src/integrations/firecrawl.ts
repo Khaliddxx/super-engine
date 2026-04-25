@@ -230,6 +230,29 @@ export async function scrapeSite(
   return results;
 }
 
+export type PageType =
+  | "home"
+  | "about"
+  | "services"
+  | "menu"
+  | "rooms"
+  | "treatments"
+  | "gallery"
+  | "team"
+  | "contact"
+  | "book"
+  | "pricing"
+  | "blog"
+  | "other";
+
+export interface SitemapEntry {
+  slug: string; // e.g. "menu.html" (preview route name)
+  type: PageType;
+  title: string;
+  snippet: string;
+  sourceUrl: string;
+}
+
 export interface RichSiteInfo {
   services: string[];
   heroCopy: string;
@@ -241,6 +264,7 @@ export interface RichSiteInfo {
   copyrightYear: number | null;
   totalTextLength: number;
   pagesScraped: Array<{ url: string; title: string; length: number }>;
+  sitemap: SitemapEntry[];
 }
 
 function extractTestimonials(md: string): string[] {
@@ -315,6 +339,85 @@ function extractPricingMentions(md: string): string[] {
   return out.slice(0, 10);
 }
 
+function classifyPage(url: string, title: string): PageType {
+  const path = (() => {
+    try {
+      return new URL(url).pathname.toLowerCase();
+    } catch {
+      return url.toLowerCase();
+    }
+  })();
+  const titleLc = title.toLowerCase();
+  if (path === "/" || path === "") return "home";
+  const rules: Array<[PageType, RegExp[]]> = [
+    ["about", [/\babout\b/, /\bour[-_ ]story\b/, /\bwho[-_ ]we[-_ ]are\b/]],
+    ["services", [/\bservices?\b/, /\bwhat[-_ ]we[-_ ]do\b/, /\btreatments?\b/, /\bsolutions?\b/]],
+    ["menu", [/\bmenu\b/, /\bfood\b/, /\bdrinks?\b/, /\bwine[-_ ]list\b/]],
+    ["rooms", [/\brooms?\b/, /\bsuites?\b/, /\baccommodation\b/, /\bvenues?\b/, /\bspaces?\b/]],
+    ["treatments", [/\btreatments?\b/, /\bprocedures?\b/]],
+    ["gallery", [/\bgalleries?\b/, /\bgallery\b/, /\bportfolio\b/, /\bphotos?\b/, /\bwork\b/]],
+    ["team", [/\bteam\b/, /\bstaff\b/, /\bpeople\b/, /\bdoctors?\b/, /\bdentists?\b/]],
+    ["contact", [/\bcontact\b/, /\bfind[-_ ]us\b/, /\blocation\b/, /\bvisit\b/]],
+    ["book", [/\bbook(?:ing)?\b/, /\breserv(?:e|ations?)\b/, /\bappointments?\b/]],
+    ["pricing", [/\bpricing\b/, /\brates?\b/, /\bfees?\b/]],
+    ["blog", [/\bblog\b/, /\bnews\b/, /\barticles?\b/, /\binsights?\b/]],
+  ];
+  for (const [type, patterns] of rules) {
+    if (patterns.some((re) => re.test(path) || re.test(titleLc))) return type;
+  }
+  return "other";
+}
+
+/**
+ * Decide which scraped pages become distinct routes in the generated mock.
+ * We mirror the REAL sitemap (home + the 3-4 most informative type-matches)
+ * rather than inventing a generic one-pager shape.
+ */
+function buildSitemap(results: ScrapeResult[]): SitemapEntry[] {
+  const entries: SitemapEntry[] = [];
+  const seenTypes = new Set<PageType>();
+
+  for (const r of results) {
+    const title = String((r.metadata as any)?.title ?? r.url).slice(0, 160);
+    const type = classifyPage(r.url, title);
+    if (seenTypes.has(type) && type !== "other") continue;
+    seenTypes.add(type);
+
+    const md = r.markdown ?? "";
+    const firstPara = md
+      .split(/\n\s*\n/)
+      .map((p) => p.replace(/^#+\s*/, "").trim())
+      .find((p) => p.length > 60 && p.length < 500) ?? "";
+
+    // Map types to preview-route slugs.
+    const slugBase =
+      type === "home"
+        ? "index"
+        : type === "rooms"
+        ? "rooms"
+        : type === "treatments"
+        ? "services"
+        : type === "book"
+        ? "contact"
+        : type;
+    entries.push({
+      slug: `${slugBase}.html`,
+      type,
+      title,
+      snippet: firstPara.slice(0, 500),
+      sourceUrl: r.url,
+    });
+  }
+
+  // Ensure index.html (home) is first
+  entries.sort((a, b) => (a.type === "home" ? -1 : b.type === "home" ? 1 : 0));
+
+  // De-dupe by slug (e.g. book+contact both map to contact.html → keep first)
+  const bySlug = new Map<string, SitemapEntry>();
+  for (const e of entries) if (!bySlug.has(e.slug)) bySlug.set(e.slug, e);
+  return [...bySlug.values()].slice(0, 5);
+}
+
 export function extractRichSiteInfo(results: ScrapeResult[]): RichSiteInfo {
   if (results.length === 0) {
     return {
@@ -328,6 +431,7 @@ export function extractRichSiteInfo(results: ScrapeResult[]): RichSiteInfo {
       copyrightYear: null,
       totalTextLength: 0,
       pagesScraped: [],
+      sitemap: [],
     };
   }
 
@@ -358,6 +462,8 @@ export function extractRichSiteInfo(results: ScrapeResult[]): RichSiteInfo {
 
   const totalTextLength = pagesScraped.reduce((s, p) => s + p.length, 0);
 
+  const sitemap = buildSitemap(results);
+
   return {
     services,
     heroCopy: homepageInfo.heroCopy,
@@ -369,6 +475,7 @@ export function extractRichSiteInfo(results: ScrapeResult[]): RichSiteInfo {
     copyrightYear,
     totalTextLength,
     pagesScraped,
+    sitemap,
   };
 }
 

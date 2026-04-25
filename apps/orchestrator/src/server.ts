@@ -1,13 +1,35 @@
 import fastify from "fastify";
 import cors from "@fastify/cors";
 import jwtPlugin from "@fastify/jwt";
+import { sql as rawSql } from "@super-engine/db";
 import { env } from "./lib/env.js";
 import { logger } from "./lib/logger.js";
 import { db } from "./lib/db.js";
 import { registerRoutes } from "./api/routes.js";
 import { startCron } from "./cron.js";
 
+/**
+ * Run additive schema migrations on boot. Everything uses IF NOT EXISTS so
+ * it is idempotent and safe to run on every start. We intentionally keep
+ * this minimal (no Drizzle migrator machinery) — the goal is just to make
+ * sure new columns exist before application code references them.
+ */
+async function runStartupMigrations(): Promise<void> {
+  try {
+    const d = db();
+    await d.execute(rawSql`ALTER TABLE "prospects" ADD COLUMN IF NOT EXISTS "scraped_assets" jsonb`);
+    await d.execute(rawSql`ALTER TABLE "prospects" ADD COLUMN IF NOT EXISTS "scraped_sitemap" jsonb`);
+    await d.execute(rawSql`ALTER TABLE "prospects" ADD COLUMN IF NOT EXISTS "site_strength_score" numeric(4, 1)`);
+    await d.execute(rawSql`ALTER TABLE "prospects" ADD COLUMN IF NOT EXISTS "site_strength_signals" jsonb`);
+    logger.info("startup migrations applied");
+  } catch (err) {
+    logger.error({ err: String(err) }, "startup migrations failed");
+  }
+}
+
 async function main() {
+  await runStartupMigrations();
+
   const app = fastify({ logger: false, bodyLimit: 5 * 1024 * 1024 });
 
   await app.register(cors, { origin: true, credentials: true });

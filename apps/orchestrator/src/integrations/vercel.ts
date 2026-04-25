@@ -55,18 +55,28 @@ async function disableProjectProtection(projectId: string): Promise<void> {
   }
 }
 
-export async function deployStaticHtml(args: {
-  html: string;
+export interface StaticSiteFile {
+  /** Path within the deployment root, e.g. "index.html", "about.html". */
+  file: string;
+  /** UTF-8 source; will be base64-encoded before upload. */
+  data: string;
+}
+
+export async function deployStaticSite(args: {
+  files: StaticSiteFile[];
   businessName: string;
   prospectId: string;
 }): Promise<DeployResult> {
+  if (args.files.length === 0) throw new Error("deployStaticSite: no files provided");
   const teamId = env().VERCEL_TEAM_ID;
   const qs = teamId ? `?teamId=${teamId}` : "";
   const name = `${slugify(args.businessName)}-${shortHash(args.prospectId)}`;
 
-  const files = [
-    { file: "index.html", data: Buffer.from(args.html).toString("base64"), encoding: "base64" as const },
-  ];
+  const files = args.files.map((f) => ({
+    file: f.file,
+    data: Buffer.from(f.data).toString("base64"),
+    encoding: "base64" as const,
+  }));
 
   const res = await fetch(`https://api.vercel.com/v13/deployments${qs}`, {
     method: "POST",
@@ -94,4 +104,17 @@ export async function deployStaticHtml(args: {
   }
 
   return { deploymentId: json.id, url: `https://${url}` };
+}
+
+/** @deprecated Use {@link deployStaticSite} instead. Kept for backwards-compat callers. */
+export async function deployStaticHtml(args: {
+  html: string;
+  businessName: string;
+  prospectId: string;
+}): Promise<DeployResult> {
+  return deployStaticSite({
+    files: [{ file: "index.html", data: args.html }],
+    businessName: args.businessName,
+    prospectId: args.prospectId,
+  });
 }

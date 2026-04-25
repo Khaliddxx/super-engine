@@ -1,4 +1,4 @@
-import { prospects, type DbClient, type Prospect } from "@super-engine/db";
+import { type DbClient, type Prospect } from "@super-engine/db";
 import { domainSearch, HunterAuthError, pickBestEmail, pickLinkedInUrl } from "../integrations/hunter.js";
 import {
   scrape,
@@ -7,6 +7,7 @@ import {
   extractRichSiteInfo,
   extractAssets,
   type ScrapedAssets,
+  type SitemapEntry,
 } from "../integrations/firecrawl.js";
 import { RejectProspectError } from "../lib/errors.js";
 import { transition } from "./transitions.js";
@@ -39,6 +40,7 @@ export async function enrichProspect(db: DbClient, prospect: Prospect): Promise<
     let testimonials: string[] | null = null;
     let scrapedPagesMeta: Array<{ url: string; title: string; length: number }> | null = null;
     let scrapedAssets: ScrapedAssets | null = null;
+    let scrapedSitemap: SitemapEntry[] | null = null;
     let detectedYear: number | null = null;
     let totalLength = 0;
 
@@ -51,6 +53,7 @@ export async function enrichProspect(db: DbClient, prospect: Prospect): Promise<
       detectedYear = rich.copyrightYear;
       totalLength = rich.totalTextLength;
       scrapedPagesMeta = rich.pagesScraped;
+      scrapedSitemap = rich.sitemap.length ? rich.sitemap : null;
       scrapedAssets = extractAssets(siteResults);
       logger.info(
         {
@@ -60,8 +63,9 @@ export async function enrichProspect(db: DbClient, prospect: Prospect): Promise<
           images: scrapedAssets.images.length,
           videos: scrapedAssets.videos.length,
           colors: scrapedAssets.brandColors.length,
+          sitemap_slugs: scrapedSitemap?.map((s) => s.slug) ?? null,
         },
-        "enrich: rich site info + assets",
+        "enrich: rich site info + assets + sitemap",
       );
     } else {
       // Fallback to single homepage scrape
@@ -111,6 +115,7 @@ export async function enrichProspect(db: DbClient, prospect: Prospect): Promise<
         scrapedTestimonials: testimonials,
         scrapedPages: scrapedPagesMeta as any,
         scrapedAssets: scrapedAssets as any,
+        scrapedSitemap: scrapedSitemap as any,
         detectedYear,
       },
     });
