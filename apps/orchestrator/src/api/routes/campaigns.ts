@@ -39,7 +39,7 @@ export async function campaignRoutes(app: FastifyInstance, opts: Opts): Promise<
         targetCity: body.targetCity,
         targetCountry: (body.targetCountry ?? "AU").toUpperCase().slice(0, 2),
         maxProspects: body.maxProspects ?? 20,
-        outreachChannel: body.outreachChannel ?? "linkedin",
+        outreachChannel: body.outreachChannel ?? "both",
         imageryStrategy: body.imageryStrategy ?? "none",
         autoSendEnabled: false,
       })

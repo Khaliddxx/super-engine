@@ -1,5 +1,6 @@
 import { marketScans, type DbClient } from "@super-engine/db";
 import { textSearch } from "../integrations/places.js";
+import { analyzeSiteStrength } from "./site-strength.js";
 import { logger } from "../lib/logger.js";
 import crypto from "node:crypto";
 
@@ -139,6 +140,15 @@ export const CITY_SETS: Record<string, string[]> = {
 
 export const SUPPORTED_COUNTRIES = Object.keys(CITY_SETS);
 
+export function normalizeCountry(input: string | null | undefined): string {
+  const c = (input ?? "").trim().toUpperCase();
+  if (!c) return "US";
+  if (!SUPPORTED_COUNTRIES.includes(c)) {
+    throw new Error(`unsupported_country:${c}`);
+  }
+  return c;
+}
+
 export interface ScoutOptions {
   country: string;
   maxCells?: number;
@@ -149,25 +159,89 @@ export interface ScoutOptions {
 export interface ScoutRow {
   niche: string;
   city: string;
+  country?: string;
   businessCount: number;
   avgRating: number;
   totalReviews: number;
   pctWithWebsite: number;
+  pctOutdatedEstimate: number;
+  scoreBreakdown?: {
+    outdatedNeed: number;
+    contactability: number;
+    independentness: number;
+    valuePotential: number;
+    demandDepth: number;
+  };
   opportunityScore: number;
   nicheTicketWeight: number;
 }
 
+function clamp01(n: number): number {
+  return Math.max(0, Math.min(1, n));
+}
+
+function computeScore(
+  args: {
+    placeCount: number;
+    pctWithWebsite: number;
+    pctOutdatedEstimate: number;
+    medianReviews: number;
+    nicheTicketWeight: number;
+  },
+): { score: number; breakdown: ScoutRow["scoreBreakdown"] } {
+  const outdatedNeed = clamp01(args.pctOutdatedEstimate);
+  const contactability = clamp01(args.pctWithWebsite);
+  // Smaller median review usually indicates less chain-heavy / more independent.
+  const independentness = clamp01(1 - Math.log1p(Math.min(args.medianReviews, 5000)) / Math.log1p(5000));
+  const valuePotential = clamp01((args.nicheTicketWeight - 0.6) / (2.0 - 0.6));
+  const demandDepth = clamp01(Math.log1p(args.placeCount) / Math.log1p(20));
+  const score =
+    outdatedNeed * 0.36 +
+    contactability * 0.24 +
+    independentness * 0.2 +
+    valuePotential * 0.14 +
+    demandDepth * 0.06;
+  return {
+    score: Math.round(score * 1000) / 10, // 0..100
+    breakdown: {
+      outdatedNeed: Math.round(outdatedNeed * 100) / 100,
+      contactability: Math.round(contactability * 100) / 100,
+      independentness: Math.round(independentness * 100) / 100,
+      valuePotential: Math.round(valuePotential * 100) / 100,
+      demandDepth: Math.round(demandDepth * 100) / 100,
+    },
+  };
+}
+
+async function estimateOutdatedRate(websites: string[]): Promise<number> {
+  const sample = websites.slice(0, 5);
+  if (sample.length === 0) return 0;
+  const strengths = await Promise.all(
+    sample.map((url) =>
+      analyzeSiteStrength(url).catch((err) => {
+        logger.warn({ err: String(err), url }, "market scout site-strength sample failed");
+        return null;
+      }),
+    ),
+  );
+  const scanned = strengths.filter(Boolean);
+  if (scanned.length === 0) return 0;
+
+  // Weak means "this site probably has visible redesign leverage". Strong
+  // sites are actively bad leads for this product, so they reduce the market.
+  const weak = scanned.filter((s) => s && !s.strong && s.score < 2.5).length;
+  return Math.round((weak / scanned.length) * 100) / 100;
+}
+
 export async function runMarketScout(db: DbClient, opts: ScoutOptions): Promise<ScoutRow[]> {
   const scanRunId = crypto.randomUUID();
-  const country = opts.country.toUpperCase();
-  const cities = opts.cities ?? CITY_SETS[country] ?? CITY_SETS.AU!;
+  const country = normalizeCountry(opts.country);
+  const cities = opts.cities ?? CITY_SETS[country] ?? [];
   const niches = opts.niches ?? Object.keys(NICHE_TICKET_WEIGHTS);
-  // We have a much wider grid now (~50 niches × 15 cities = 750 cells per
-  // country). Don't scan the whole thing on every rescan — that's a lot of
-  // Places quota. Instead cap at 60 cells per run and randomly seed which
-  // (niche, city) pairs we try. Subsequent runs cover different territory,
-  // and the marketScans cache aggregates them over time.
-  const maxCells = Math.min(opts.maxCells ?? 60, niches.length * cities.length);
+  // We have a wide grid (~50 niches × 15 cities = 750 cells per country).
+  // Scoring now samples live websites for outdated signals, so each cell is
+  // more valuable but more expensive. Keep scans smaller and better.
+  const maxCells = Math.min(opts.maxCells ?? 24, niches.length * cities.length);
 
   // Build full cartesian product, then shuffle for variety per scan.
   const allCells: Array<{ niche: string; city: string }> = [];
@@ -186,12 +260,13 @@ export async function runMarketScout(db: DbClient, opts: ScoutOptions): Promise<
     try {
       const query = `${cell.niche} in ${cell.city}`;
       const places = await textSearch(query, { max: 20 });
-      const withWebsite = places.filter((p) => p.website).length;
+      const websiteUrls = places.map((p) => p.website).filter((u): u is string => Boolean(u));
+      const withWebsite = websiteUrls.length;
       const totalReviews = places.reduce((s, p) => s + (p.userRatingCount ?? 0), 0);
       const rated = places.filter((p) => p.rating !== null);
       const avgRating = rated.length ? rated.reduce((s, p) => s + (p.rating ?? 0), 0) / rated.length : 0;
       const pctWithWebsite = places.length ? withWebsite / places.length : 0;
-      const pctOutdatedEstimate = 0.6; // heuristic; full Lighthouse scoring skipped per scope
+      const pctOutdatedEstimate = await estimateOutdatedRate(websiteUrls);
       const tw = NICHE_TICKET_WEIGHTS[cell.niche] ?? 1.0;
       // Median review count per business — better signal than sum (which
       // lets chain niches like "hotel" with 10k-review flagships dominate).
@@ -201,23 +276,25 @@ export async function runMarketScout(db: DbClient, opts: ScoutOptions): Promise<
       const medianReviews = reviewCounts.length
         ? reviewCounts[Math.floor(reviewCounts.length / 2)] ?? 0
         : 0;
-      const opportunityScore =
-        Math.log(Math.max(places.length, 1)) *
-        pctOutdatedEstimate *
-        Math.max(Math.log(medianReviews + 10), 1) *
-        tw *
-        // If <25% of top businesses have a website, they're not buying
-        // redesigns. Otherwise let it flow linearly.
-        Math.max(pctWithWebsite, 0.25);
+      const scored = computeScore({
+        placeCount: places.length,
+        pctWithWebsite,
+        pctOutdatedEstimate,
+        medianReviews,
+        nicheTicketWeight: tw,
+      });
 
       const row: ScoutRow = {
         niche: cell.niche,
         city: cell.city,
+        country,
         businessCount: places.length,
         avgRating: Math.round(avgRating * 10) / 10,
         totalReviews,
         pctWithWebsite: Math.round(pctWithWebsite * 100) / 100,
-        opportunityScore: Math.round(opportunityScore * 100) / 100,
+        pctOutdatedEstimate,
+        scoreBreakdown: scored.breakdown,
+        opportunityScore: scored.score,
         nicheTicketWeight: tw,
       };
       results.push(row);

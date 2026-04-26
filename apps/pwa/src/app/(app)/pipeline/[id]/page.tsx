@@ -32,10 +32,14 @@ export default function PipelineDetailPage() {
 
   const [inviteText, setInviteText] = useState("");
   const [drafting, setDrafting] = useState(false);
+  const [emailSubject, setEmailSubject] = useState("");
+  const [emailBody, setEmailBody] = useState("");
+  const [draftingEmail, setDraftingEmail] = useState(false);
   const [instruction, setInstruction] = useState<string>("");
   const [instructionLoaded, setInstructionLoaded] = useState(false);
 
   async function draftInvite() {
+    if (!data?.prospect?.linkedinUrl) return;
     setDrafting(true);
     try {
       const r = await api<{ body: string }>(`/api/pipeline/${id}/draft-invite`, { method: "POST", body: {} });
@@ -47,12 +51,29 @@ export default function PipelineDetailPage() {
     }
   }
 
+  async function draftEmail() {
+    if (!data?.prospect?.email) return;
+    setDraftingEmail(true);
+    try {
+      const r = await api<{ subject: string; body: string }>(`/api/pipeline/${id}/draft-email`, { method: "POST", body: {} });
+      setEmailSubject(r.subject);
+      setEmailBody(r.body);
+    } catch (e: any) {
+      toast.error(e.message ?? "Email draft failed");
+    } finally {
+      setDraftingEmail(false);
+    }
+  }
+
   useEffect(() => {
-    if (data?.prospect?.state === "REDESIGNED" && !inviteText) {
+    const channel = data?.campaign?.outreachChannel ?? "linkedin";
+    if (data?.prospect?.state === "REDESIGNED" && data?.prospect?.linkedinUrl && (channel === "linkedin" || channel === "both") && !inviteText) {
       draftInvite();
     }
-     
-  }, [data?.prospect?.state]);
+    if (data?.prospect?.state === "REDESIGNED" && data?.prospect?.email && (channel === "email" || channel === "both") && !emailBody) {
+      draftEmail();
+    }
+  }, [data?.prospect?.state, data?.campaign?.outreachChannel]);
 
   useEffect(() => {
     // Sync the local textarea with the persisted instruction once on load.
@@ -66,7 +87,12 @@ export default function PipelineDetailPage() {
     mutationFn: (sendNow: boolean) =>
       api(`/api/pipeline/${id}/approve`, {
         method: "POST",
-        body: { approvedMessage: inviteText, sendNow },
+        body: {
+          approvedMessage: inviteText,
+          approvedEmailSubject: emailSubject,
+          approvedEmailBody: emailBody,
+          sendNow,
+        },
       }),
     onSuccess: (_: any, sendNow) => {
       toast.success(sendNow ? "Invite sent" : "Approved");
@@ -151,6 +177,12 @@ export default function PipelineDetailPage() {
   const p = data.prospect;
   const isReviewable = p.state === "REDESIGNED" || p.state === "APPROVED_TO_SEND";
   const isRejected = p.state === "REJECTED";
+  const outreachChannel = data.campaign?.outreachChannel ?? "linkedin";
+  const wantsLinkedIn = outreachChannel === "linkedin" || outreachChannel === "both";
+  const wantsEmail = outreachChannel === "email" || outreachChannel === "both";
+  const canSendLinkedIn = !wantsLinkedIn || Boolean(p.linkedinUrl && inviteText.trim());
+  const canSendEmail = !wantsEmail || Boolean(p.email && emailSubject.trim() && emailBody.trim());
+  const hasAnySendTarget = Boolean((wantsLinkedIn && p.linkedinUrl) || (wantsEmail && p.email));
 
   return (
     <div className="max-w-xl mx-auto px-4 safe-top pb-4">
@@ -262,8 +294,10 @@ export default function PipelineDetailPage() {
           <>
             <div className="card p-4 space-y-2">
               <div className="flex items-center justify-between">
-                <p className="text-xs uppercase tracking-wider text-muted">LinkedIn invite note</p>
-                <button onClick={draftInvite} disabled={drafting} className="text-xs text-accent">
+                <p className="text-xs uppercase tracking-wider text-muted">
+                  LinkedIn invite note {wantsLinkedIn ? "" : "(not used)"}
+                </p>
+                <button onClick={draftInvite} disabled={drafting || !p.linkedinUrl || !wantsLinkedIn} className="text-xs text-accent disabled:opacity-40">
                   {drafting ? "Drafting…" : "Regenerate note"}
                 </button>
               </div>
@@ -273,9 +307,45 @@ export default function PipelineDetailPage() {
                 maxLength={299}
                 onChange={(e) => setInviteText(e.target.value)}
                 className="input resize-none"
-                placeholder={drafting ? "Drafting…" : "Your invite note — max 300 chars"}
+                disabled={!wantsLinkedIn}
+                placeholder={
+                  !p.linkedinUrl
+                    ? "No LinkedIn URL found"
+                    : drafting
+                      ? "Drafting…"
+                      : "Your invite note — max 300 chars"
+                }
               />
               <p className="text-[11px] text-muted text-right">{inviteText.length}/299</p>
+            </div>
+
+            <div className="card p-4 space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-xs uppercase tracking-wider text-muted">
+                  Instantly email {wantsEmail ? "" : "(not used)"}
+                </p>
+                <button onClick={draftEmail} disabled={draftingEmail || !p.email || !wantsEmail} className="text-xs text-accent disabled:opacity-40">
+                  {draftingEmail ? "Drafting…" : "Regenerate email"}
+                </button>
+              </div>
+              <input
+                value={emailSubject}
+                onChange={(e) => setEmailSubject(e.target.value)}
+                disabled={!wantsEmail}
+                className="input text-sm"
+                placeholder={!p.email ? "No email found" : "Subject"}
+              />
+              <textarea
+                rows={6}
+                value={emailBody}
+                onChange={(e) => setEmailBody(e.target.value)}
+                disabled={!wantsEmail}
+                className="input resize-none text-sm"
+                placeholder={!p.email ? "No email found" : "Email body"}
+              />
+              <p className="text-[11px] text-muted leading-snug">
+                Channel: {outreachChannel}. Email sends by adding this prospect to the configured Instantly campaign.
+              </p>
             </div>
 
             <div className="card p-4 space-y-2">
@@ -336,10 +406,10 @@ export default function PipelineDetailPage() {
             <div className="grid grid-cols-1 gap-2">
               <button
                 onClick={() => approve.mutate(true)}
-                disabled={approve.isPending || !inviteText.trim() || !p.linkedinUrl}
+                disabled={approve.isPending || !hasAnySendTarget || !canSendLinkedIn || !canSendEmail}
                 className="btn-primary"
               >
-                <Send className="w-4 h-4" /> {approve.isPending ? "Sending…" : "Send invite now"}
+                <Send className="w-4 h-4" /> {approve.isPending ? "Sending…" : "Send outreach now"}
               </button>
               <button
                 onClick={() => approve.mutate(false)}
@@ -350,8 +420,11 @@ export default function PipelineDetailPage() {
               </button>
             </div>
 
-            {!p.linkedinUrl && (
-              <p className="text-xs text-danger">Missing LinkedIn URL — can't send invite yet.</p>
+            {wantsLinkedIn && !p.linkedinUrl && (
+              <p className="text-xs text-danger">Missing LinkedIn URL — LinkedIn send will be skipped.</p>
+            )}
+            {wantsEmail && !p.email && (
+              <p className="text-xs text-danger">Missing email — Instantly send will be skipped.</p>
             )}
           </>
         )}

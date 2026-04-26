@@ -1,12 +1,31 @@
-import { eq, and, type DbClient, prospects, type Prospect } from "@super-engine/db";
+import { asc, eq, type DbClient, prospects, campaigns, type Prospect } from "@super-engine/db";
 import { enrichProspect } from "./enrich.js";
 import { qualifyProspect } from "./qualify.js";
 import { redesignProspect } from "./redesign.js";
-import { sendLinkedInInviteForProspect } from "./send.js";
+import { sendApprovedOutreachForProspect } from "./send.js";
 import { logger } from "../lib/logger.js";
 
 async function listByState(db: DbClient, state: string, limit = 10): Promise<Prospect[]> {
-  return db.select().from(prospects).where(eq(prospects.state, state)).limit(limit);
+  return db
+    .select()
+    .from(prospects)
+    .where(eq(prospects.state, state))
+    .orderBy(asc(prospects.updatedAt))
+    .limit(limit);
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timeout: NodeJS.Timeout | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(`${label}_timeout_${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 /**
@@ -24,7 +43,7 @@ export async function runPipelineCycle(db: DbClient): Promise<Record<string, num
   // BEFORE we pay Firecrawl + Hunter credits on them.
   for (const p of await listByState(db, "NEW", 5)) {
     try {
-      await qualifyProspect(db, p);
+      await withTimeout(qualifyProspect(db, p), 90_000, "qualify");
       qualified++;
     } catch (err) {
       logger.error({ err: String(err), prospectId: p.id }, "qualify failed");
@@ -34,7 +53,7 @@ export async function runPipelineCycle(db: DbClient): Promise<Record<string, num
   // 2. ENRICH the ones that passed qualify (multi-page scrape + assets + Hunter)
   for (const p of await listByState(db, "QUALIFIED", 5)) {
     try {
-      await enrichProspect(db, p);
+      await withTimeout(enrichProspect(db, p), 180_000, "enrich");
       enriched++;
     } catch (err) {
       logger.error({ err: String(err), prospectId: p.id }, "enrich failed");
@@ -44,7 +63,7 @@ export async function runPipelineCycle(db: DbClient): Promise<Record<string, num
   // 3. REDESIGN using the real assets we just extracted
   for (const p of await listByState(db, "ENRICHED", 3)) {
     try {
-      await redesignProspect(db, p);
+      await withTimeout(redesignProspect(db, p), 240_000, "redesign");
       redesigned++;
     } catch (err) {
       logger.error({ err: String(err), prospectId: p.id }, "redesign failed");
@@ -60,11 +79,19 @@ export async function runPipelineCycle(db: DbClient): Promise<Record<string, num
  * drives sends via the PWA.
  */
 export async function runAutoSendPass(db: DbClient): Promise<number> {
-  const toSend = await listByState(db, "APPROVED_TO_SEND", 10);
+  const toSend = await db
+    .select()
+    .from(prospects)
+    .innerJoin(campaigns, eq(campaigns.id, prospects.campaignId))
+    .where(eq(prospects.state, "APPROVED_TO_SEND"))
+    .orderBy(asc(prospects.updatedAt))
+    .limit(25);
   let sent = 0;
-  for (const p of toSend) {
+  for (const row of toSend) {
+    if (!row.campaigns.autoSendEnabled) continue;
+    const p = row.prospects;
     try {
-      const r = await sendLinkedInInviteForProspect(db, p);
+      const r = await sendApprovedOutreachForProspect(db, p);
       if (r.sent) sent++;
     } catch (err) {
       logger.error({ err: String(err), prospectId: p.id }, "auto-send failed");

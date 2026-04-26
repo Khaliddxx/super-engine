@@ -3,6 +3,32 @@ import { runMarketScout, type ScoutRow } from "./market-scout.js";
 import { scrapeProspectsForCampaign, type ScrapeSummary } from "./scrape.js";
 import { logger } from "../lib/logger.js";
 
+function clamp01(n: number): number {
+  return Math.max(0, Math.min(1, n));
+}
+
+function deriveBreakdownFromStored(row: {
+  businessCount: number;
+  pctWithWebsite: number;
+  pctOutdatedEstimate: number;
+  totalReviews: number;
+  nicheTicketWeight: number;
+}): NonNullable<ScoutRow["scoreBreakdown"]> {
+  const medianApprox = row.businessCount > 0 ? row.totalReviews / row.businessCount : 0;
+  const outdatedNeed = clamp01(row.pctOutdatedEstimate);
+  const contactability = clamp01(row.pctWithWebsite);
+  const independentness = clamp01(1 - Math.log1p(Math.min(medianApprox, 5000)) / Math.log1p(5000));
+  const valuePotential = clamp01((row.nicheTicketWeight - 0.6) / (2.0 - 0.6));
+  const demandDepth = clamp01(Math.log1p(row.businessCount) / Math.log1p(20));
+  return {
+    outdatedNeed: Math.round(outdatedNeed * 100) / 100,
+    contactability: Math.round(contactability * 100) / 100,
+    independentness: Math.round(independentness * 100) / 100,
+    valuePotential: Math.round(valuePotential * 100) / 100,
+    demandDepth: Math.round(demandDepth * 100) / 100,
+  };
+}
+
 export interface FreshScoutResult {
   rows: ScoutRow[];
   totalCells: number;
@@ -35,12 +61,21 @@ export async function getFreshScoutRows(
       rows: rows.map((r) => ({
         niche: r.niche,
         city: r.city,
+        country: r.country,
         businessCount: r.businessCount ?? 0,
         avgRating: r.avgRating ? Number(r.avgRating) : 0,
         totalReviews: r.totalReviews ?? 0,
         pctWithWebsite: r.pctWithWebsite ? Number(r.pctWithWebsite) : 0,
+        pctOutdatedEstimate: r.pctOutdatedEstimate ? Number(r.pctOutdatedEstimate) : 0,
         opportunityScore: r.opportunityScore ? Number(r.opportunityScore) : 0,
         nicheTicketWeight: r.nicheTicketWeight ? Number(r.nicheTicketWeight) : 1,
+        scoreBreakdown: deriveBreakdownFromStored({
+          businessCount: r.businessCount ?? 0,
+          pctWithWebsite: r.pctWithWebsite ? Number(r.pctWithWebsite) : 0,
+          pctOutdatedEstimate: r.pctOutdatedEstimate ? Number(r.pctOutdatedEstimate) : 0,
+          totalReviews: r.totalReviews ?? 0,
+          nicheTicketWeight: r.nicheTicketWeight ? Number(r.nicheTicketWeight) : 1,
+        }),
       })),
       totalCells: rows.length,
       cacheHit: true,
@@ -106,7 +141,7 @@ export async function pickAndLaunch(
       targetCity: pick.city,
       targetCountry: country.slice(0, 2),
       maxProspects,
-      outreachChannel: "linkedin",
+      outreachChannel: "both",
       imageryStrategy: "none",
       autoSendEnabled: false,
     })
@@ -150,7 +185,7 @@ export async function pickAndLaunchCustom(
       targetCity: city,
       targetCountry: country,
       maxProspects,
-      outreachChannel: "linkedin",
+      outreachChannel: "both",
       imageryStrategy: "none",
       autoSendEnabled: false,
     })

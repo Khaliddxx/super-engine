@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyPluginOptions } from "fastify";
 import { eq, type DbClient, operatorSettings } from "@super-engine/db";
 import { requireAuth } from "../auth-guard.js";
 import { env } from "../../lib/env.js";
+import { checkInstantlyConfigured } from "../../integrations/instantly.js";
 
 interface Opts extends FastifyPluginOptions {
   db: () => DbClient;
@@ -27,6 +28,7 @@ export async function settingsRoutes(app: FastifyInstance, opts: Opts): Promise<
       linkedinDailyCap,
       claudeModel: cfg.CLAUDE_MODEL,
       unipileConfigured: Boolean(cfg.UNIPILE_ACCOUNT_ID && cfg.UNIPILE_API_KEY && cfg.UNIPILE_DSN),
+      instantlyConfigured: Boolean(cfg.INSTANTLY_API_KEY && cfg.INSTANTLY_CAMPAIGN_ID),
       slackConfigured: Boolean(cfg.SLACK_WEBHOOK_URL),
     };
   });
@@ -102,6 +104,13 @@ export async function settingsRoutes(app: FastifyInstance, opts: Opts): Promise<
       service: "unipile",
       ok: Boolean(cfg.UNIPILE_ACCOUNT_ID && cfg.UNIPILE_API_KEY && cfg.UNIPILE_DSN),
       detail: cfg.UNIPILE_ACCOUNT_ID ? "configured" : "missing",
+    });
+
+    const instantly = await checkInstantlyConfigured();
+    checks.push({
+      service: "instantly",
+      ok: instantly.ok,
+      detail: instantly.detail,
     });
 
     return { checks };

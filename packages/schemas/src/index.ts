@@ -185,6 +185,8 @@ export const ServerEnvSchema = z.object({
   LINKEDIN_DAILY_CAP: z.coerce.number().default(10),
 
   INSTANTLY_API_KEY: z.string().optional().or(z.literal("")),
+  INSTANTLY_CAMPAIGN_ID: z.string().uuid().optional().or(z.literal("")),
+  EMAIL_DAILY_CAP: z.coerce.number().default(25),
   SLACK_WEBHOOK_URL: z.string().url().optional().or(z.literal("")),
 });
 export type ServerEnv = z.infer<typeof ServerEnvSchema>;

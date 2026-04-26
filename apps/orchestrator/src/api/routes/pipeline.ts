@@ -1,10 +1,10 @@
 import type { FastifyInstance, FastifyPluginOptions } from "fastify";
-import { and, desc, eq, gte, type DbClient, prospects, campaigns, deployments } from "@super-engine/db";
+import { and, desc, eq, gte, lte, type DbClient, prospects, campaigns, deployments } from "@super-engine/db";
 import { requireAuth } from "../auth-guard.js";
 import { transition } from "../../modules/transitions.js";
 import { redesignProspect } from "../../modules/redesign.js";
 import { enrichProspect } from "../../modules/enrich.js";
-import { sendLinkedInInviteForProspect, draftInviteNote } from "../../modules/send.js";
+import { sendApprovedOutreachForProspect, draftInviteNote, draftInitialEmail } from "../../modules/send.js";
 import { sanitizeTopIssues } from "../../modules/qualify.js";
 
 /** Translate a `since` token like "today" | "7d" | "30d" | "all" into a Date threshold. */
@@ -72,6 +72,32 @@ export async function pipelineRoutes(app: FastifyInstance, opts: Opts): Promise<
     return { items, since: since?.toISOString() ?? null };
   });
 
+  // Operational diagnostics: find prospects that have not moved for N minutes.
+  app.get<{ Querystring: { state?: string; olderThanMin?: string; limit?: string } }>("/stuck", async (req) => {
+    const db = opts.db();
+    const state = (req.query.state ?? "ENRICHED").toUpperCase();
+    const olderThanMin = Math.max(5, Number(req.query.olderThanMin ?? 60) || 60);
+    const limit = Math.min(200, Number(req.query.limit ?? 50) || 50);
+    const cutoff = new Date(Date.now() - olderThanMin * 60 * 1000);
+    const rows = await db
+      .select({
+        id: prospects.id,
+        state: prospects.state,
+        businessName: prospects.businessName,
+        niche: prospects.niche,
+        city: prospects.city,
+        campaignId: prospects.campaignId,
+        rejectionReason: prospects.rejectionReason,
+        updatedAt: prospects.updatedAt,
+        createdAt: prospects.createdAt,
+      })
+      .from(prospects)
+      .where(and(eq(prospects.state, state as any), lte(prospects.updatedAt, cutoff)))
+      .orderBy(desc(prospects.updatedAt))
+      .limit(limit);
+    return { state, olderThanMin, count: rows.length, items: rows };
+  });
+
   app.get<{ Params: { id: string } }>("/:id", async (req, reply) => {
     const db = opts.db();
     const [p] = await db.select().from(prospects).where(eq(prospects.id, req.params.id));
@@ -102,8 +128,20 @@ export async function pipelineRoutes(app: FastifyInstance, opts: Opts): Promise<
     return { body };
   });
 
+  app.post<{ Params: { id: string } }>("/:id/draft-email", async (req, reply) => {
+    const db = opts.db();
+    const [p] = await db.select().from(prospects).where(eq(prospects.id, req.params.id));
+    if (!p) return reply.status(404).send({ error: "not_found" });
+    if (!p.email) return reply.status(400).send({ error: "no_email" });
+    if (!p.redesignHtmlUrl) return reply.status(400).send({ error: "no_redesign" });
+    return await draftInitialEmail(p);
+  });
+
   // Approve a redesign — moves to APPROVED_TO_SEND and (if provided) schedules/sends an invite
-  app.post<{ Params: { id: string }; Body: { approvedMessage?: string; sendNow?: boolean } }>(
+  app.post<{
+    Params: { id: string };
+    Body: { approvedMessage?: string; approvedEmailSubject?: string; approvedEmailBody?: string; sendNow?: boolean };
+  }>(
     "/:id/approve",
     async (req, reply) => {
       const db = opts.db();
@@ -127,8 +165,10 @@ export async function pipelineRoutes(app: FastifyInstance, opts: Opts): Promise<
       if (req.body?.sendNow) {
         const [refreshed] = await db.select().from(prospects).where(eq(prospects.id, p.id));
         if (!refreshed) return reply.status(404).send({ error: "not_found_after_transition" });
-        const result = await sendLinkedInInviteForProspect(db, refreshed, {
+        const result = await sendApprovedOutreachForProspect(db, refreshed, {
           approvedMessage: req.body.approvedMessage,
+          approvedEmailSubject: req.body.approvedEmailSubject,
+          approvedEmailBody: req.body.approvedEmailBody,
         });
         return { ok: true, send: result };
       }
@@ -219,13 +259,45 @@ export async function pipelineRoutes(app: FastifyInstance, opts: Opts): Promise<
     return { ok: true };
   });
 
+  // Retry enrich without forcing a full NEW reset.
+  app.post<{ Params: { id: string } }>("/:id/retry-enrich", async (req, reply) => {
+    const db = opts.db();
+    const [p] = await db.select().from(prospects).where(eq(prospects.id, req.params.id));
+    if (!p) return reply.status(404).send({ error: "not_found" });
+    if (p.state !== "QUALIFIED") {
+      return reply.status(400).send({ error: "wrong_state", expected: "QUALIFIED", state: p.state });
+    }
+    try {
+      await enrichProspect(db, p);
+      return { ok: true };
+    } catch (err) {
+      return reply.status(502).send({ error: "enrich_failed", detail: String(err) });
+    }
+  });
+
+  // Retry redesign for prospects already enriched.
+  app.post<{ Params: { id: string } }>("/:id/retry-redesign", async (req, reply) => {
+    const db = opts.db();
+    const [p] = await db.select().from(prospects).where(eq(prospects.id, req.params.id));
+    if (!p) return reply.status(404).send({ error: "not_found" });
+    if (p.state !== "ENRICHED") {
+      return reply.status(400).send({ error: "wrong_state", expected: "ENRICHED", state: p.state });
+    }
+    try {
+      await redesignProspect(db, p);
+      return { ok: true };
+    } catch (err) {
+      return reply.status(502).send({ error: "redesign_failed", detail: String(err) });
+    }
+  });
+
   app.post<{ Params: { id: string }; Body: { instruction?: string | null } }>(
     "/:id/regenerate",
     async (req, reply) => {
       const db = opts.db();
       const [p] = await db.select().from(prospects).where(eq(prospects.id, req.params.id));
       if (!p) return reply.status(404).send({ error: "not_found" });
-      if (!["QUALIFIED", "REDESIGNED"].includes(p.state)) {
+      if (!["QUALIFIED", "ENRICHED", "REDESIGNED"].includes(p.state)) {
         return reply.status(400).send({ error: "wrong_state", state: p.state });
       }
 
@@ -237,7 +309,7 @@ export async function pipelineRoutes(app: FastifyInstance, opts: Opts): Promise<
         await db.update(prospects).set({ redesignInstruction: next, updatedAt: new Date() }).where(eq(prospects.id, p.id));
       }
 
-      if (p.state !== "QUALIFIED") {
+      if (p.state === "REDESIGNED") {
         await transition({
           db,
           prospectId: p.id,
@@ -249,7 +321,13 @@ export async function pipelineRoutes(app: FastifyInstance, opts: Opts): Promise<
       }
       const [refreshed] = await db.select().from(prospects).where(eq(prospects.id, p.id));
       if (!refreshed) return reply.status(404).send({ error: "not_found_after_transition" });
-      await redesignProspect(db, refreshed);
+      if (refreshed.state === "QUALIFIED") {
+        await redesignProspect(db, refreshed);
+      } else if (refreshed.state === "ENRICHED") {
+        await redesignProspect(db, refreshed);
+      } else {
+        return reply.status(400).send({ error: "wrong_state_after_refresh", state: refreshed.state });
+      }
       return { ok: true, instruction: refreshed.redesignInstruction ?? null };
     },
   );

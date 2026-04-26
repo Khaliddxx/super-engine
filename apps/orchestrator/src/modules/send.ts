@@ -5,14 +5,17 @@ import {
   count,
   type DbClient,
   type Prospect,
+  prospects,
   sendLog,
   threads,
   messages,
+  campaigns,
 } from "@super-engine/db";
-import { LINKEDIN_INVITE_PROMPT_V1, FIRST_DM_PROMPT_V1 } from "@super-engine/prompts";
+import { LINKEDIN_INVITE_PROMPT_V1, FIRST_DM_PROMPT_V1, EMAIL_INITIAL_PROMPT_V1 } from "@super-engine/prompts";
 import { OutreachMessageSchema } from "@super-engine/schemas";
 import { claudeText, extractJson } from "../integrations/claude.js";
 import { sendLinkedInInvite, startChat, sendChatMessage } from "../integrations/unipile.js";
+import { createInstantlyLead } from "../integrations/instantly.js";
 import { env } from "../lib/env.js";
 import { isWithinSendWindow } from "../lib/time.js";
 import { transition } from "./transitions.js";
@@ -36,7 +39,7 @@ function scrubOutboundCopy(s: string): string {
     .trim();
 }
 
-async function sentToday(db: DbClient, kind: "invite" | "dm"): Promise<number> {
+async function sentToday(db: DbClient, kind: "invite" | "dm" | "email_initial"): Promise<number> {
   const startOfDay = new Date();
   startOfDay.setHours(0, 0, 0, 0);
   const rows = await db
@@ -48,7 +51,9 @@ async function sentToday(db: DbClient, kind: "invite" | "dm"): Promise<number> {
 
 export interface SendGateResult {
   sent: boolean;
-  reason?: "deferred_send_window" | "deferred_cap" | "missing_linkedin" | "missing_redesign";
+  reason?: "deferred_send_window" | "deferred_cap" | "missing_linkedin" | "missing_email" | "missing_redesign" | "missing_instantly_campaign";
+  channels?: Record<string, SendGateResult>;
+  externalRef?: string;
 }
 
 /** Draft a connection request note. Returns the body (no subject for LI). */
@@ -67,6 +72,25 @@ export async function draftInviteNote(prospect: Prospect): Promise<string> {
   );
   const parsed = OutreachMessageSchema.parse(extractJson(raw));
   return scrubOutboundCopy(parsed.body).slice(0, 299);
+}
+
+export async function draftInitialEmail(prospect: Prospect): Promise<{ subject: string; body: string }> {
+  const cfg = env();
+  const raw = await claudeText(
+    EMAIL_INITIAL_PROMPT_V1.render({
+      business_name: prospect.businessName,
+      city: prospect.city ?? "",
+      top_issues: prospect.qualificationIssues ?? [],
+      redesign_url: prospect.redesignHtmlUrl ?? "",
+      operator_first_name: firstName(cfg.OPERATOR_NAME),
+    }),
+    { maxTokens: 900, temperature: 0.75 },
+  );
+  const parsed = OutreachMessageSchema.parse(extractJson(raw));
+  return {
+    subject: scrubOutboundCopy(parsed.subject ?? `Quick idea for ${prospect.businessName}`).slice(0, 80),
+    body: scrubOutboundCopy(parsed.body),
+  };
 }
 
 /** Draft the first DM to send after they accept the connection. */
@@ -187,6 +211,149 @@ export async function sendLinkedInInviteForProspect(
 
   logger.info({ prospectId: prospect.id, invitationId: result.invitationId }, "linkedin invite sent");
   return { sent: true };
+}
+
+export async function sendEmailInitialForProspect(
+  db: DbClient,
+  prospect: Prospect,
+  opts: { approvedSubject?: string; approvedBody?: string } = {},
+): Promise<SendGateResult> {
+  const cfg = env();
+  if (!prospect.email) {
+    await db.insert(sendLog).values({
+      prospectId: prospect.id,
+      channel: "email",
+      kind: "email_initial",
+      status: "failed",
+      error: "missing_email",
+    });
+    return { sent: false, reason: "missing_email" };
+  }
+  if (!prospect.redesignHtmlUrl) return { sent: false, reason: "missing_redesign" };
+  if (!cfg.INSTANTLY_CAMPAIGN_ID) {
+    await db.insert(sendLog).values({
+      prospectId: prospect.id,
+      channel: "email",
+      kind: "email_initial",
+      status: "failed",
+      error: "missing_instantly_campaign",
+    });
+    return { sent: false, reason: "missing_instantly_campaign" };
+  }
+
+  if (!isWithinSendWindow(prospect.timezone, 9, 17)) {
+    await db.insert(sendLog).values({
+      prospectId: prospect.id,
+      channel: "email",
+      kind: "email_initial",
+      status: "deferred_send_window",
+    });
+    return { sent: false, reason: "deferred_send_window" };
+  }
+
+  const today = await sentToday(db, "email_initial");
+  if (today >= cfg.EMAIL_DAILY_CAP) {
+    await db.insert(sendLog).values({
+      prospectId: prospect.id,
+      channel: "email",
+      kind: "email_initial",
+      status: "deferred_cap",
+    });
+    return { sent: false, reason: "deferred_cap" };
+  }
+
+  const draft =
+    opts.approvedBody?.trim()
+      ? { subject: scrubOutboundCopy(opts.approvedSubject ?? `Quick idea for ${prospect.businessName}`), body: scrubOutboundCopy(opts.approvedBody) }
+      : await draftInitialEmail(prospect);
+
+  const result = await createInstantlyLead({
+    campaignId: cfg.INSTANTLY_CAMPAIGN_ID,
+    email: prospect.email,
+    businessName: prospect.businessName,
+    website: prospect.website,
+    phone: prospect.phone,
+    subject: draft.subject,
+    body: draft.body,
+    redesignUrl: prospect.redesignHtmlUrl,
+    topIssue: prospect.qualificationIssues?.[0] ?? null,
+  });
+
+  await db.insert(sendLog).values({
+    prospectId: prospect.id,
+    channel: "email",
+    kind: "email_initial",
+    status: "queued",
+    externalRef: result.id,
+  });
+
+  const [existingThread] = await db.select().from(threads).where(and(eq(threads.prospectId, prospect.id), eq(threads.channel, "email")));
+  const threadId =
+    existingThread?.id ??
+    (
+      await db
+        .insert(threads)
+        .values({
+          prospectId: prospect.id,
+          channel: "email",
+          externalThreadId: result.id,
+        })
+        .returning()
+    )[0]!.id;
+
+  await db.insert(messages).values({
+    threadId,
+    direction: "out",
+    channel: "email",
+    subject: draft.subject,
+    content: draft.body,
+    sentAt: new Date(),
+    externalMessageId: `instantly-lead:${result.id}`,
+  });
+
+  if (prospect.state !== "SENT") {
+    await transition({
+      db,
+      prospectId: prospect.id,
+      from: prospect.state as any,
+      to: "SENT",
+      reason: "email_queued_instantly",
+    });
+  }
+
+  logger.info({ prospectId: prospect.id, instantlyLeadId: result.id }, "email queued in instantly");
+  return { sent: true, externalRef: result.id };
+}
+
+export async function sendApprovedOutreachForProspect(
+  db: DbClient,
+  prospect: Prospect,
+  opts: { approvedMessage?: string; approvedEmailSubject?: string; approvedEmailBody?: string } = {},
+): Promise<SendGateResult> {
+  const [campaign] = await db.select().from(campaigns).where(eq(campaigns.id, prospect.campaignId));
+  const channel = campaign?.outreachChannel ?? "linkedin";
+  const wantsEmail = channel === "email" || channel === "both";
+  const wantsLinkedIn = channel === "linkedin" || channel === "both";
+  const channels: Record<string, SendGateResult> = {};
+
+  if (wantsEmail) {
+    channels.email = await sendEmailInitialForProspect(db, prospect, {
+      approvedSubject: opts.approvedEmailSubject,
+      approvedBody: opts.approvedEmailBody,
+    });
+  }
+  if (wantsLinkedIn) {
+    const [fresh] = await db.select().from(prospects).where(eq(prospects.id, prospect.id));
+    channels.linkedin = await sendLinkedInInviteForProspect(db, fresh ?? prospect, {
+      approvedMessage: opts.approvedMessage,
+    });
+  }
+
+  return {
+    sent: Object.values(channels).some((r) => r.sent),
+    channels,
+    reason: Object.values(channels).find((r) => !r.sent)?.reason,
+  };
 }
 
 /** Send first DM after the prospect accepted the invite. */
