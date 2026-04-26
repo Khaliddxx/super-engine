@@ -7,6 +7,7 @@ import { logger } from "./lib/logger.js";
 import { db } from "./lib/db.js";
 import { registerRoutes } from "./api/routes.js";
 import { startCron } from "./cron.js";
+import { runStudioOverlayRepairPass } from "./modules/studio-overlay-repair.js";
 
 /**
  * Run additive schema migrations on boot. Everything uses IF NOT EXISTS so
@@ -31,6 +32,9 @@ async function runStartupMigrations(): Promise<void> {
     await d.execute(rawSql`ALTER TABLE "market_scans" ADD COLUMN IF NOT EXISTS "outcome_score" numeric(4, 3)`);
     await d.execute(rawSql`ALTER TABLE "market_scans" ADD COLUMN IF NOT EXISTS "source" varchar(24) DEFAULT 'scout'`);
     await d.execute(rawSql`ALTER TABLE "operator_settings" ADD COLUMN IF NOT EXISTS "preferences" jsonb`);
+    await d.execute(rawSql`ALTER TABLE "prospects" ADD COLUMN IF NOT EXISTS "draft_linkedin_invite" text`);
+    await d.execute(rawSql`ALTER TABLE "prospects" ADD COLUMN IF NOT EXISTS "draft_email_subject" text`);
+    await d.execute(rawSql`ALTER TABLE "prospects" ADD COLUMN IF NOT EXISTS "draft_email_body" text`);
     await d.execute(
       rawSql`UPDATE "campaigns" SET "outreach_channel" = 'both' WHERE "outreach_channel" = 'linkedin' AND "created_at" > NOW() - INTERVAL '60 days'`,
     );
@@ -67,6 +71,10 @@ async function main() {
 
   // Cron + inbox poller run in-process alongside the HTTP server
   startCron(db());
+
+  void runStudioOverlayRepairPass(db(), { maxProspects: 120 }).catch((err) =>
+    logger.error({ err: String(err) }, "initial studio overlay repair pass failed"),
+  );
 }
 
 main().catch((err) => {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -8,6 +8,7 @@ import { ArrowLeft, CalendarClock, ExternalLink, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "../../../../../lib/api";
 import { SkeletonLine } from "../../../../../components/skeleton";
+import { useAuth } from "../../../../../components/AuthProvider";
 
 type Res = {
   prospect: any;
@@ -15,18 +16,63 @@ type Res = {
   studioBookingMailto: string | null;
 };
 
-/** Lovable-style: live iframe + AI edit panel beside it (operator-only; auth via API). */
+function apiBase(): string {
+  return process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
+}
+
+/** Lovable-style: live iframe + AI edit panel beside it. Operator JWT or studio-preview password. */
 export default function PipelinePreviewStudioPage() {
   const { id } = useParams<{ id: string }>();
   const qc = useQueryClient();
+  const { token, setToken, loading: authLoading } = useAuth();
   const [instruction, setInstruction] = useState("");
   const [previewCacheKey, setPreviewCacheKey] = useState(0);
+  const [studioPw, setStudioPw] = useState("");
 
-  const { data, isLoading, refetch } = useQuery({
+  const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ["pipeline", id],
     queryFn: () => api<Res>(`/api/pipeline/${id}`),
+    enabled: Boolean(!authLoading && token),
     refetchInterval: 30_000,
     placeholderData: (prev) => prev,
+    retry: false,
+  });
+
+  useEffect(() => {
+    if (!isError || !error) return;
+    const msg = String((error as Error).message);
+    if (/failed: 401\b/.test(msg)) {
+      setToken(null);
+      toast.error("Session expired — sign in or unlock with the preview password");
+    }
+  }, [isError, error, setToken]);
+
+  const unlockStudio = useMutation({
+    mutationFn: async (password: string) => {
+      const res = await fetch(`${apiBase()}/api/auth/studio-preview`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+      });
+      const j = (await res.json().catch(() => ({}))) as { token?: string; error?: string };
+      if (!res.ok) {
+        const code = j.error ?? `http_${res.status}`;
+        if (code === "studio_preview_password_not_configured") {
+          throw new Error("Preview password not configured — set it under Controls in the portal");
+        }
+        if (code === "invalid_password") throw new Error("Wrong password");
+        throw new Error(code);
+      }
+      if (!j.token) throw new Error("no_token");
+      return j.token;
+    },
+    onSuccess: (t) => {
+      setToken(t);
+      setStudioPw("");
+      toast.success("Unlocked — you can edit the preview");
+      void qc.invalidateQueries({ queryKey: ["pipeline", id] });
+    },
+    onError: (e: unknown) => toast.error(e instanceof Error ? e.message : "Unlock failed"),
   });
 
   const patchNavbar = useMutation({
@@ -45,6 +91,57 @@ export default function PipelinePreviewStudioPage() {
     },
     onError: (e: any) => toast.error(e.message ?? "Patch failed"),
   });
+
+  if (authLoading) {
+    return (
+      <div className="px-4 safe-top pb-4 space-y-3 max-w-4xl mx-auto">
+        <SkeletonLine className="h-8 w-40" />
+        <SkeletonLine className="h-[50vh] w-full rounded-lg" />
+      </div>
+    );
+  }
+
+  if (!token) {
+    return (
+      <div className="px-4 safe-top pb-4 max-w-md mx-auto space-y-4">
+        <Link href={`/pipeline/${id}`} className="inline-flex items-center gap-1 text-muted text-sm">
+          <ArrowLeft className="w-4 h-4" /> Pipeline
+        </Link>
+        <div className="card p-4 space-y-3">
+          <h1 className="text-sm font-medium">Unlock preview studio</h1>
+          <p className="text-xs text-muted leading-relaxed">
+            Enter the studio preview password from your Super Engine Controls. This is separate from your main
+            operator login and is not stored on client preview websites.
+          </p>
+          <input
+            type="password"
+            autoComplete="current-password"
+            className="input text-sm w-full"
+            placeholder="Preview password"
+            value={studioPw}
+            onChange={(e) => setStudioPw(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && studioPw.trim()) unlockStudio.mutate(studioPw.trim());
+            }}
+          />
+          <button
+            type="button"
+            className="btn-primary w-full text-sm"
+            disabled={unlockStudio.isPending || !studioPw.trim()}
+            onClick={() => unlockStudio.mutate(studioPw.trim())}
+          >
+            {unlockStudio.isPending ? "Checking…" : "Unlock"}
+          </button>
+          <p className="text-[11px] text-muted text-center">
+            <Link href="/login" className="underline hover:text-fg">
+              Operator sign in
+            </Link>{" "}
+            instead
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   const p = data?.prospect;
   const url = p?.redesignHtmlUrl as string | undefined;

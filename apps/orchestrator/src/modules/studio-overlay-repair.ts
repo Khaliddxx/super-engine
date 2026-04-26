@@ -1,12 +1,19 @@
-import { deployments, eq, desc, prospects, type DbClient, type Prospect } from "@super-engine/db";
-import { claudeText } from "../integrations/claude.js";
+import {
+  deployments,
+  eq,
+  desc,
+  asc,
+  prospects,
+  isNotNull,
+  type DbClient,
+  type Prospect,
+} from "@super-engine/db";
 import { deployStaticSite, type StaticSiteFile } from "../integrations/vercel.js";
 import { env } from "../lib/env.js";
 import { logger } from "../lib/logger.js";
 import { buildStudioOverlay, injectOverlay } from "./redesign.js";
 
 const MAX_HTML_FETCH = 400_000;
-const MAX_CLAUDE_INPUT = 120_000;
 const MAX_ASSET_BYTES_TOTAL = 40 * 1024 * 1024;
 const MAX_ASSET_FILES = 200;
 const MAX_ASSET_PER_FILE = 6 * 1024 * 1024;
@@ -39,20 +46,6 @@ function pageSlugsFromVariant(v: unknown): string[] {
   const set = new Set(norm);
   if (!set.has("index.html")) set.add("index.html");
   return [...set];
-}
-
-function stripCodeFences(s: string): string {
-  return s
-    .replace(/^\s*```(?:html)?\s*/i, "")
-    .replace(/```\s*$/i, "")
-    .trim();
-}
-
-/** First <nav>...</nav> (non-greedy); sufficient when nav is not nested. */
-function replaceFirstNavMarkup(html: string, newNav: string): { html: string; ok: boolean } {
-  const re = /<nav\b[\s\S]*?<\/nav>/i;
-  if (!re.test(html)) return { html, ok: false };
-  return { html: html.replace(re, newNav.trim()), ok: true };
 }
 
 function shouldSkipHref(src: string): boolean {
@@ -91,58 +84,22 @@ function collectRelativeAssetPaths(html: string, pageHref: string, base: URL): s
   return out;
 }
 
-function navbarPatchModel(): string {
-  const cfg = env();
-  const m = (cfg.NAVBAR_PATCH_MODEL ?? "").trim();
-  if (m) return m;
-  return cfg.CLAUDE_MODEL;
-}
+export type StudioOverlayRepairResult =
+  | { status: "skipped"; reason: "no_preview_url" | "already_present" }
+  | { status: "repaired"; url: string; warnings: string[] }
+  | { status: "error"; message: string };
 
-async function claudeNavbarMarkup(indexHtml: string, instruction: string): Promise<string> {
-  const slice = indexHtml.length > MAX_CLAUDE_INPUT ? indexHtml.slice(0, MAX_CLAUDE_INPUT) : indexHtml;
-  const prompt = `You edit static HTML microsites. The operator wants ONLY the primary navigation bar changed.
-
-Return a single complete HTML element: one opening <nav ...> tag through its matching closing </nav>. No markdown, no backticks, no commentary before or after.
-
-Rules:
-- Keep the same general link destinations (href paths) unless the instruction explicitly asks to rename or reorder items.
-- Match the visual style of the existing nav (classes, structure) as much as possible while applying the instruction.
-- Do not add scripts. Do not change footer or main content.
-
-Operator instruction:
-${instruction.trim()}
-
-Current page HTML (index; excerpt may be truncated):
-${slice}`;
-
-  const raw = await claudeText(prompt, { model: navbarPatchModel(), maxTokens: 8000, temperature: 0.3 });
-  let nav = stripCodeFences(raw);
-  if (!/<nav\b/i.test(nav)) {
-    const grab = nav.match(/(<nav\b[\s\S]*<\/nav>)/i);
-    if (grab) nav = grab[1]!;
-  }
-  if (!/<nav\b/i.test(nav) || !/<\/nav>/i.test(nav)) {
-    throw new Error("Model did not return a complete <nav> element");
-  }
-  return nav.trim();
-}
-
-export interface PatchRedesignNavbarResult {
-  url: string;
-  warnings: string[];
-}
-
-export async function patchRedesignNavbar(
+/**
+ * Fetches the live redesign preview, injects the studio banner on any HTML page
+ * that is missing it, and redeploys. Safe to call repeatedly (no-op when overlay
+ * already exists on every page).
+ */
+export async function ensureStudioOverlayOnLivePreview(
   db: DbClient,
   prospect: Prospect,
-  body: { scope: "navbar"; instruction: string },
-): Promise<PatchRedesignNavbarResult> {
-  const instruction = body.instruction?.trim() ?? "";
-  if (!instruction) throw new Error("instruction_required");
-  if (body.scope !== "navbar") throw new Error("unsupported_scope");
-
+): Promise<StudioOverlayRepairResult> {
   const previewUrl = prospect.redesignHtmlUrl?.trim();
-  if (!previewUrl) throw new Error("no_redesign_url");
+  if (!previewUrl) return { status: "skipped", reason: "no_preview_url" };
 
   const [latest] = await db
     .select()
@@ -151,10 +108,8 @@ export async function patchRedesignNavbar(
     .orderBy(desc(deployments.createdAt))
     .limit(1);
 
-  if (!latest) throw new Error("no_deployment");
-
   const base = normalizeSiteBase(previewUrl);
-  const slugs = pageSlugsFromVariant(latest.variantJson);
+  const slugs = latest ? pageSlugsFromVariant(latest.variantJson) : ["index.html"];
 
   const htmlBySlug = new Map<string, string>();
   const warnings: string[] = [];
@@ -181,22 +136,8 @@ export async function patchRedesignNavbar(
 
   for (const slug of slugs) {
     if (!htmlBySlug.has(slug) || !htmlBySlug.get(slug)?.trim()) {
-      throw new Error(`missing_page:${slug}`);
+      return { status: "error", message: `missing_page:${slug}` };
     }
-  }
-
-  if (!htmlBySlug.get("index.html")?.trim()) {
-    throw new Error("index_html_missing");
-  }
-
-  const indexHtml = htmlBySlug.get("index.html")!;
-  const newNav = await claudeNavbarMarkup(indexHtml, instruction);
-
-  const patchedHtml = new Map<string, string>();
-  for (const [slug, html] of htmlBySlug) {
-    const { html: next, ok } = replaceFirstNavMarkup(html, newNav);
-    if (!ok) warnings.push(`no <nav> in ${slug}; skipped`);
-    patchedHtml.set(slug, ok ? next : html);
   }
 
   const cfg = env();
@@ -213,9 +154,17 @@ export async function patchRedesignNavbar(
     prospectId: prospect.id,
     pwaAppUrl: (cfg.PWA_APP_URL ?? "").trim() || undefined,
   });
+
+  const outHtml = new Map<string, string>();
+  let overlayChanged = false;
   for (const slug of slugs) {
-    const h = patchedHtml.get(slug);
-    if (h) patchedHtml.set(slug, injectOverlay(h, overlayHtml));
+    const h = htmlBySlug.get(slug)!;
+    const next = injectOverlay(h, overlayHtml);
+    if (next !== h) overlayChanged = true;
+    outHtml.set(slug, next);
+  }
+  if (!overlayChanged) {
+    return { status: "skipped", reason: "already_present" };
   }
 
   const assetPaths = new Set<string>();
@@ -229,7 +178,7 @@ export async function patchRedesignNavbar(
   }
 
   const files: StaticSiteFile[] = [];
-  for (const [slug, data] of patchedHtml) {
+  for (const [slug, data] of outHtml) {
     files.push({ file: slug, data, encoding: "utf8" });
   }
 
@@ -268,44 +217,96 @@ export async function patchRedesignNavbar(
     }
   }
 
-  const deploy = await deployStaticSite({
-    files,
-    businessName: prospect.businessName,
-    prospectId: prospect.id,
-  });
+  try {
+    const deploy = await deployStaticSite({
+      files,
+      businessName: prospect.businessName,
+      prospectId: prospect.id,
+    });
 
-  const patchedIndex = patchedHtml.get("index.html") ?? indexHtml;
+    const indexOut = outHtml.get("index.html") ?? "";
 
-  const nextVariant = {
-    ...(typeof latest.variantJson === "object" && latest.variantJson !== null ? latest.variantJson : {}),
-    navbarPatch: {
-      at: new Date().toISOString(),
-      instruction,
-      model: navbarPatchModel(),
-    },
-  };
+    const nextVariant = {
+      ...(typeof latest?.variantJson === "object" && latest?.variantJson !== null ? latest.variantJson : {}),
+      pageSlugs: slugs,
+      studioOverlayRepair: { at: new Date().toISOString() },
+    };
 
-  await db.insert(deployments).values({
-    prospectId: prospect.id,
-    vercelDeploymentId: deploy.deploymentId,
-    url: deploy.url,
-    htmlContent: patchedIndex,
-    variantJson: nextVariant as Record<string, unknown>,
-  });
+    await db.insert(deployments).values({
+      prospectId: prospect.id,
+      vercelDeploymentId: deploy.deploymentId,
+      url: deploy.url,
+      htmlContent: indexOut,
+      variantJson: nextVariant as Record<string, unknown>,
+    });
 
-  await db
-    .update(prospects)
-    .set({
-      redesignHtmlUrl: deploy.url,
-      redesignDeployedAt: new Date(),
-      updatedAt: new Date(),
-    })
-    .where(eq(prospects.id, prospect.id));
+    await db
+      .update(prospects)
+      .set({
+        redesignHtmlUrl: deploy.url,
+        redesignDeployedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(prospects.id, prospect.id));
 
-  logger.info(
-    { prospectId: prospect.id, url: deploy.url, warnings: warnings.length },
-    "navbar patch redeployed",
-  );
+    logger.info(
+      { prospectId: prospect.id, url: deploy.url, warnings: warnings.length },
+      "studio overlay repair redeployed",
+    );
 
-  return { url: deploy.url, warnings };
+    return { status: "repaired", url: deploy.url, warnings };
+  } catch (e) {
+    return { status: "error", message: String(e) };
+  }
+}
+
+let repairPassInFlight = false;
+
+/**
+ * Walk prospects with a live preview URL and repair missing studio banners.
+ * Oldest `redesignDeployedAt` first so backfill eventually covers the full backlog.
+ */
+export async function runStudioOverlayRepairPass(
+  db: DbClient,
+  opts?: { maxProspects?: number },
+): Promise<{ examined: number; repaired: number; skipped: number; errors: number }> {
+  if (repairPassInFlight) {
+    return { examined: 0, repaired: 0, skipped: 0, errors: 0 };
+  }
+  repairPassInFlight = true;
+  const maxProspects = opts?.maxProspects ?? 60;
+  let examined = 0;
+  let repaired = 0;
+  let skipped = 0;
+  let errors = 0;
+
+  try {
+    const rows = await db
+      .select()
+      .from(prospects)
+      .where(isNotNull(prospects.redesignHtmlUrl))
+      .orderBy(asc(prospects.redesignDeployedAt))
+      .limit(maxProspects);
+
+    for (const p of rows) {
+      examined++;
+      try {
+        const r = await ensureStudioOverlayOnLivePreview(db, p);
+        if (r.status === "repaired") repaired++;
+        else if (r.status === "skipped") skipped++;
+        else errors++;
+      } catch (e) {
+        errors++;
+        logger.warn({ prospectId: p.id, err: String(e) }, "studio overlay repair threw");
+      }
+    }
+
+    if (repaired > 0 || errors > 0) {
+      logger.info({ examined, repaired, skipped, errors }, "studio overlay repair pass");
+    }
+
+    return { examined, repaired, skipped, errors };
+  } finally {
+    repairPassInFlight = false;
+  }
 }

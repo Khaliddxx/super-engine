@@ -125,6 +125,11 @@ export const prospects = pgTable(
     // explicitly cleared.
     redesignInstruction: text("redesign_instruction"),
 
+    /** Persisted LinkedIn invite draft (survives leaving pipeline detail). */
+    draftLinkedinInvite: text("draft_linkedin_invite"),
+    draftEmailSubject: text("draft_email_subject"),
+    draftEmailBody: text("draft_email_body"),
+
     // redesign
     variantPalette: varchar("variant_palette", { length: 64 }),
     variantFonts: varchar("variant_fonts", { length: 64 }),

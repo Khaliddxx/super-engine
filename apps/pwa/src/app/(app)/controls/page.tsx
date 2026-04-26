@@ -37,6 +37,8 @@ type Settings = {
   slackConfigured: boolean;
   instantlyConfigured?: boolean;
   icp: Icp | null;
+  pwaAppUrl: string | null;
+  studioPreviewEditPasswordSet: boolean;
 };
 
 export default function ControlsPage() {
@@ -190,6 +192,18 @@ export default function ControlsPage() {
       }),
     onSuccess: () => {
       toast.success("ICP saved");
+      qc.invalidateQueries({ queryKey: ["settings"] });
+    },
+    onError: (e: any) => toast.error(e.message ?? "Save failed"),
+  });
+
+  const [studioPreviewPw, setStudioPreviewPw] = useState("");
+  const saveStudioPreviewPw = useMutation({
+    mutationFn: (body: { studioPreviewEditPassword: string }) =>
+      api("/api/settings", { method: "POST", body }),
+    onSuccess: () => {
+      toast.success("Studio preview password saved");
+      setStudioPreviewPw("");
       qc.invalidateQueries({ queryKey: ["settings"] });
     },
     onError: (e: any) => toast.error(e.message ?? "Save failed"),
@@ -441,6 +455,48 @@ export default function ControlsPage() {
             <p>Unipile: {settingsQ.data.unipileConfigured ? "configured" : "missing"}</p>
             <p>Instantly: {settingsQ.data.instantlyConfigured ? "configured" : "missing"}</p>
             <p>Slack: {settingsQ.data.slackConfigured ? "configured" : "off"}</p>
+            <p>
+              PWA URL (orchestrator <code className="text-[10px]">PWA_APP_URL</code>):{" "}
+              {settingsQ.data.pwaAppUrl ? (
+                <span className="text-fg/80">{settingsQ.data.pwaAppUrl}</span>
+              ) : (
+                <span className="text-amber-600 dark:text-amber-400">not set — Edit with AI link on previews disabled</span>
+              )}
+            </p>
+          </div>
+          <div className="rounded-lg border border-border bg-surface/50 p-3 space-y-2">
+            <p className="text-xs font-medium text-fg/90">Studio preview — Edit with AI</p>
+            <p className="text-[11px] text-muted leading-snug">
+              Password unlocks the preview studio for people who open{" "}
+              <span className="text-fg/80">Edit with AI</span> from a client site. It is stored here only — never
+              embedded in static preview HTML. Full portal access still uses your main login.
+            </p>
+            <p className="text-[11px] text-muted">
+              Status:{" "}
+              {settingsQ.data.studioPreviewEditPasswordSet ? (
+                <span className="text-emerald-600 dark:text-emerald-400">set</span>
+              ) : (
+                <span className="text-amber-600 dark:text-amber-400">not set (optional env override)</span>
+              )}
+            </p>
+            <input
+              type="password"
+              autoComplete="new-password"
+              className="input text-sm"
+              placeholder="New password (leave blank and save to clear)"
+              value={studioPreviewPw}
+              onChange={(e) => setStudioPreviewPw(e.target.value)}
+            />
+            <button
+              type="button"
+              className="btn-secondary w-full text-sm"
+              disabled={saveStudioPreviewPw.isPending}
+              onClick={() =>
+                saveStudioPreviewPw.mutate({ studioPreviewEditPassword: studioPreviewPw.trim() })
+              }
+            >
+              {saveStudioPreviewPw.isPending ? "Saving…" : "Save preview password"}
+            </button>
           </div>
           <div className="flex items-center gap-2">
             <label className="text-xs text-muted whitespace-nowrap">LinkedIn daily cap:</label>

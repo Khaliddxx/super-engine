@@ -4,6 +4,10 @@ import { requireAuth } from "../auth-guard.js";
 import { env } from "../../lib/env.js";
 import { checkInstantlyConfigured } from "../../integrations/instantly.js";
 import type { OperatorIcpPrefs } from "../../modules/market-launch.js";
+import {
+  resolveStudioPreviewPassword,
+  isStudioPreviewPasswordConfigured,
+} from "../../lib/studio-preview-password.js";
 
 interface Opts extends FastifyPluginOptions {
   db: () => DbClient;
@@ -21,6 +25,7 @@ export async function settingsRoutes(app: FastifyInstance, opts: Opts): Promise<
       .where(eq(operatorSettings.operatorEmail, cfg.OPERATOR_EMAIL || "operator@local"));
     const linkedinDailyCap = s?.linkedinDailyCap ?? cfg.LINKEDIN_DAILY_CAP;
     const preferences = (s?.preferences as { icp?: OperatorIcpPrefs } | null | undefined) ?? {};
+    const previewPw = await resolveStudioPreviewPassword(opts.db());
     return {
       operator: {
         name: cfg.OPERATOR_NAME,
@@ -33,6 +38,8 @@ export async function settingsRoutes(app: FastifyInstance, opts: Opts): Promise<
       instantlyConfigured: Boolean(cfg.INSTANTLY_API_KEY && cfg.INSTANTLY_CAMPAIGN_ID),
       slackConfigured: Boolean(cfg.SLACK_WEBHOOK_URL),
       icp: preferences.icp ?? null,
+      pwaAppUrl: (cfg.PWA_APP_URL ?? "").trim() || null,
+      studioPreviewEditPasswordSet: isStudioPreviewPasswordConfigured(previewPw),
     };
   });
 
@@ -119,30 +126,47 @@ export async function settingsRoutes(app: FastifyInstance, opts: Opts): Promise<
     return { checks };
   });
 
-  app.post<{ Body: { linkedinDailyCap?: number; icp?: OperatorIcpPrefs | null } }>("/", async (req) => {
+  app.post<{
+    Body: {
+      linkedinDailyCap?: number;
+      icp?: OperatorIcpPrefs | null;
+      /** Set to empty string to clear (env STUDIO_PREVIEW_EDIT_PASSWORD still applies if set). */
+      studioPreviewEditPassword?: string | null;
+    };
+  }>("/", async (req) => {
     const cfg = env();
     const db = opts.db();
     const key = cfg.OPERATOR_EMAIL || "operator@local";
     const [existing] = await db.select().from(operatorSettings).where(eq(operatorSettings.operatorEmail, key));
     const cap = req.body?.linkedinDailyCap;
     const prevPrefs = (existing?.preferences as Record<string, unknown> | null | undefined) ?? {};
-    const nextPrefs =
-      req.body && "icp" in req.body
-        ? { ...prevPrefs, icp: req.body.icp === null ? undefined : req.body.icp }
-        : prevPrefs;
+    let nextPrefs = { ...prevPrefs };
+    if (req.body && "icp" in req.body) {
+      nextPrefs = { ...nextPrefs, icp: req.body.icp === null ? undefined : req.body.icp };
+    }
+    if (req.body && "studioPreviewEditPassword" in req.body) {
+      const raw = req.body.studioPreviewEditPassword;
+      if (raw === null || raw === "") {
+        const { studioPreviewEditPassword: _drop, ...rest } = nextPrefs;
+        nextPrefs = rest;
+      } else {
+        nextPrefs = { ...nextPrefs, studioPreviewEditPassword: String(raw) };
+      }
+    }
+    const prefsDirty = (req.body && "icp" in req.body) || (req.body && "studioPreviewEditPassword" in req.body);
     if (existing) {
       await db
         .update(operatorSettings)
         .set({
           linkedinDailyCap: cap ?? existing.linkedinDailyCap,
-          ...(req.body && "icp" in req.body ? { preferences: nextPrefs as any } : {}),
+          ...(prefsDirty ? { preferences: nextPrefs as any } : {}),
         })
         .where(eq(operatorSettings.id, existing.id));
     } else {
       await db.insert(operatorSettings).values({
         operatorEmail: key,
         linkedinDailyCap: cap ?? cfg.LINKEDIN_DAILY_CAP,
-        ...(req.body && "icp" in req.body ? { preferences: nextPrefs as any } : {}),
+        ...(prefsDirty ? { preferences: nextPrefs as any } : {}),
       });
     }
     return { ok: true };

@@ -256,7 +256,7 @@ Existing booking engine URL (if any): ${i.business_contact.bookingUrl ?? "(none)
 30. Gallery (if present): responsive image grid, lazy-loaded — but vary the grid (mix wide and tall tiles, or use a horizontal scroller, or a single-row marquee).
 31. Contact: phone/email/address as scraped, <a href="tel:...">, <a href="mailto:...">. If bookingUrl scraped, show a big "Book now" button targeting it with target="_blank" rel="noopener". Map iframe from OpenStreetMap (not Google Maps) with the address query.
 32. Testimonials: render at most 2 per page, verbatim, attributed as "Verified Google review". Never fabricate reviewer names.
-33. Footer: copyright year = ${i.current_year}. Business name. Social icons from scraped socials only. Short "About" sentence. Sibling page links.
+33. Footer: copyright year = ${i.current_year}. Business name. Social icons from scraped socials only. Short "About" sentence. Sibling page links. No extra line crediting a designer, agency, "concept", "preview", "WellPlan", or any person — business only. The floating banner is added at deploy time; never mirror that pitch in the HTML.
 
 ## Differentiation self-check (before you output)
 Before returning the JSON, mentally compare your draft to the most obvious "default
@@ -274,7 +274,7 @@ from the last 5 ${i.niche}s I saw".
 ## Style / tone
 38. No em-dashes (—) or en-dashes (–). Use commas or periods.
 39. No "Lorem ipsum". No placeholder text. Every string is grounded in the business.
-40. No agency pitch, no "designed by", no "book a call" to anyone other than the business itself. The outreach pitch is added separately as an overlay — do not include it.
+40. No agency pitch and no footer or body copy that credits a designer, studio, or tool (including "designed by", "concept by", "preview by", "website by [name]", "WellPlan", etc.). No "book a call" except to the business's own booking/contact. The WellPlan.io pitch is injected as a separate floating banner at deploy — do not duplicate it anywhere in the page HTML.
 41. No emojis unless they match the niche tone. Prefer inline SVG or none.
 42. Layout variety — DO NOT default to a three-equal-cards grid. Vary: asymmetric splits, image-left-copy-right, full-bleed photo bands, editorial pull-quotes.
 

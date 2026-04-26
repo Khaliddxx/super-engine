@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -12,10 +12,20 @@ import { toast } from "sonner";
 import { api } from "../../../../lib/api";
 import { SkeletonLine } from "../../../../components/skeleton";
 
+type EmailSendLogRow = {
+  id: string;
+  status: string;
+  kind: string;
+  externalRef: string | null;
+  error: string | null;
+  sentAt: string;
+};
+
 type Res = {
   prospect: any;
   campaign: any;
   deployments: any[];
+  emailSendHistory?: EmailSendLogRow[];
   studioBookingUrl: string | null;
   studioBookingMailto: string | null;
 };
@@ -40,48 +50,123 @@ export default function PipelineDetailPage() {
   const [instruction, setInstruction] = useState<string>("");
   const [instructionLoaded, setInstructionLoaded] = useState(false);
 
-  async function draftInvite() {
+  const outreachHydratedFor = useRef<string | null>(null);
+  const canAutosaveOutreach = useRef(false);
+  const emailAutoDraftTried = useRef(false);
+  const linkedInAutoDraftTried = useRef(false);
+
+  useEffect(() => {
+    outreachHydratedFor.current = null;
+    canAutosaveOutreach.current = false;
+    emailAutoDraftTried.current = false;
+    linkedInAutoDraftTried.current = false;
+  }, [id]);
+
+  useEffect(() => {
+    if (!data?.prospect || data.prospect.id !== id) return;
+    if (outreachHydratedFor.current === id) return;
+    outreachHydratedFor.current = id;
+    setEmailSubject(data.prospect.draftEmailSubject ?? "");
+    setEmailBody(data.prospect.draftEmailBody ?? "");
+    setInviteText(data.prospect.draftLinkedinInvite ?? "");
+    queueMicrotask(() => {
+      canAutosaveOutreach.current = true;
+    });
+  }, [data?.prospect, id]);
+
+  const saveOutreachDrafts = useMutation({
+    mutationFn: (body: {
+      draftLinkedinInvite?: string | null;
+      draftEmailSubject?: string | null;
+      draftEmailBody?: string | null;
+    }) => api(`/api/pipeline/${id}/outreach-drafts`, { method: "POST", body }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["pipeline", id] }),
+  });
+
+  useEffect(() => {
+    if (!canAutosaveOutreach.current || !data?.prospect || data.prospect.id !== id) return;
+    const pr = data.prospect;
+    if (
+      emailSubject === (pr.draftEmailSubject ?? "") &&
+      emailBody === (pr.draftEmailBody ?? "") &&
+      inviteText === (pr.draftLinkedinInvite ?? "")
+    ) {
+      return;
+    }
+    const t = setTimeout(() => {
+      saveOutreachDrafts.mutate({
+        draftEmailSubject: emailSubject,
+        draftEmailBody: emailBody,
+        draftLinkedinInvite: inviteText,
+      });
+    }, 1600);
+    return () => clearTimeout(t);
+  }, [emailSubject, emailBody, inviteText, id, data?.prospect]);
+
+  const draftInvite = useCallback(async () => {
     if (!data?.prospect?.linkedinUrl) return;
     setDrafting(true);
     try {
       const r = await api<{ body: string }>(`/api/pipeline/${id}/draft-invite`, { method: "POST", body: {} });
       setInviteText(r.body);
+      qc.invalidateQueries({ queryKey: ["pipeline", id] });
     } catch (e: any) {
       toast.error(e.message ?? "Draft failed");
     } finally {
       setDrafting(false);
     }
-  }
+  }, [data?.prospect?.linkedinUrl, id, qc]);
 
-  async function draftEmail() {
+  const draftEmail = useCallback(async () => {
     if (!data?.prospect?.email) return;
     setDraftingEmail(true);
     try {
       const r = await api<{ subject: string; body: string }>(`/api/pipeline/${id}/draft-email`, { method: "POST", body: {} });
       setEmailSubject(r.subject);
       setEmailBody(r.body);
+      qc.invalidateQueries({ queryKey: ["pipeline", id] });
     } catch (e: any) {
       toast.error(e.message ?? "Email draft failed");
     } finally {
       setDraftingEmail(false);
     }
-  }
+  }, [data?.prospect?.email, id, qc]);
 
   useEffect(() => {
     const channel = data?.campaign?.outreachChannel ?? "both";
-    if (data?.prospect?.state === "REDESIGNED" && data?.prospect?.linkedinUrl && (channel === "linkedin" || channel === "both") && !inviteText) {
-      draftInvite();
-    }
+    if (linkedInAutoDraftTried.current) return;
+    if (data?.prospect?.state !== "REDESIGNED") return;
+    if (!data?.prospect?.linkedinUrl || (channel !== "linkedin" && channel !== "both")) return;
+    if (data.prospect.draftLinkedinInvite) return;
+    linkedInAutoDraftTried.current = true;
+    void draftInvite();
+  }, [
+    data?.prospect?.id,
+    data?.prospect?.state,
+    data?.prospect?.draftLinkedinInvite,
+    data?.prospect?.linkedinUrl,
+    data?.campaign?.outreachChannel,
+    draftInvite,
+  ]);
+
+  useEffect(() => {
+    const channel = data?.campaign?.outreachChannel ?? "both";
     const emailStates = ["ENRICHED", "REDESIGNED", "APPROVED_TO_SEND"];
-    if (
-      data?.prospect?.email &&
-      emailStates.includes(data?.prospect?.state) &&
-      (channel === "email" || channel === "both") &&
-      !emailBody
-    ) {
-      draftEmail();
-    }
-  }, [data?.prospect?.state, data?.campaign?.outreachChannel]);
+    if (emailAutoDraftTried.current) return;
+    if (!data?.prospect?.email || !emailStates.includes(data.prospect.state)) return;
+    if (channel !== "email" && channel !== "both") return;
+    if (data.prospect.draftEmailSubject || data.prospect.draftEmailBody) return;
+    emailAutoDraftTried.current = true;
+    void draftEmail();
+  }, [
+    data?.prospect?.id,
+    data?.prospect?.state,
+    data?.prospect?.email,
+    data?.prospect?.draftEmailSubject,
+    data?.prospect?.draftEmailBody,
+    data?.campaign?.outreachChannel,
+    draftEmail,
+  ]);
 
   useEffect(() => {
     // Sync the local textarea with the persisted instruction once on load.
@@ -167,12 +252,28 @@ export default function PipelineDetailPage() {
 
   const sendEmailNow = useMutation({
     mutationFn: () =>
-      api(`/api/pipeline/${id}/send-email-now`, {
+      api<{
+        ok: boolean;
+        send: { sent?: boolean; reason?: string; externalRef?: string };
+        instantlyLeadId: string | null;
+        instantlyHint?: string;
+      }>(`/api/pipeline/${id}/send-email-now`, {
         method: "POST",
         body: { subject: emailSubject.trim() || undefined, body: emailBody.trim() || undefined },
       }),
-    onSuccess: () => {
-      toast.success("Email queued in Instantly");
+    onSuccess: (r) => {
+      if (!r.ok) {
+        toast.error(`Not queued: ${r.send?.reason ?? "unknown"} — check send window, daily cap, and Instantly campaign ID.`);
+        qc.invalidateQueries({ queryKey: ["pipeline", id] });
+        refetch();
+        return;
+      }
+      const lead = r.instantlyLeadId ?? r.send?.externalRef;
+      toast.success(
+        lead
+          ? `Lead created in Instantly (${lead.slice(0, 8)}…). Delivery follows your campaign steps there — not instant from this app.`
+          : "Lead submitted to Instantly",
+      );
       qc.invalidateQueries({ queryKey: ["pipeline"] });
       refetch();
     },
@@ -430,7 +531,7 @@ export default function PipelineDetailPage() {
               <p className="text-xs uppercase tracking-wider text-muted">Instantly email</p>
               <button
                 type="button"
-                onClick={draftEmail}
+                onClick={() => void draftEmail()}
                 disabled={draftingEmail || !p.email}
                 className="text-xs text-accent disabled:opacity-40"
               >
@@ -464,11 +565,53 @@ export default function PipelineDetailPage() {
               className="btn-primary w-full text-sm"
             >
               <Send className="w-4 h-4" />
-              {sendEmailNow.isPending ? "Sending…" : "Send email now (Instantly)"}
+              {sendEmailNow.isPending ? "Sending…" : "Add to Instantly campaign"}
             </button>
             <p className="text-[11px] text-muted leading-snug">
-              Adds this prospect to your Instantly campaign with subject/body variables. Requires website or preview for
-              link context.
+              Creates a <strong className="font-medium text-fg/80">lead</strong> in your Instantly campaign with{" "}
+              <code className="text-[10px]">se_subject</code>, <code className="text-[10px]">se_body</code>, and{" "}
+              <code className="text-[10px]">redesign_url</code>. Actual send time is controlled inside Instantly (sequence
+              / schedule), not here. Drafts auto-save to this prospect.
+            </p>
+          </div>
+        )}
+
+        {Boolean(data.emailSendHistory?.length) && (
+          <div className="card p-4 space-y-2">
+            <p className="text-xs uppercase tracking-wider text-muted">Email activity (this prospect)</p>
+            <ul className="text-xs space-y-2 text-muted">
+              {data.emailSendHistory!.map((row) => (
+                <li key={row.id} className="border-b border-border/60 pb-2 last:border-0 last:pb-0">
+                  <span className="text-fg/90 font-medium capitalize">{row.status}</span>
+                  {row.externalRef ? (
+                    <>
+                      {" "}
+                      · ID{" "}
+                      <code className="text-[10px] text-fg/80 select-all">{row.externalRef}</code>{" "}
+                      <a
+                        href="https://app.instantly.ai/app/crm/leads"
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-accent underline"
+                      >
+                        CRM
+                      </a>
+                    </>
+                  ) : null}
+                  {row.error ? (
+                    <>
+                      {" "}
+                      · <span className="text-danger">{row.error}</span>
+                    </>
+                  ) : null}
+                  <div className="text-[10px] mt-0.5 opacity-80">
+                    {new Date(row.sentAt).toLocaleString()}
+                  </div>
+                </li>
+              ))}
+            </ul>
+            <p className="text-[10px] text-muted">
+              Replies and delivery show in Instantly (and your connected inbox), not in this pipeline UI yet.
             </p>
           </div>
         )}
@@ -480,7 +623,12 @@ export default function PipelineDetailPage() {
                 <p className="text-xs uppercase tracking-wider text-muted">
                   LinkedIn invite note {wantsLinkedIn ? "" : "(not used)"}
                 </p>
-                <button onClick={draftInvite} disabled={drafting || !p.linkedinUrl || !wantsLinkedIn} className="text-xs text-accent disabled:opacity-40">
+                <button
+                  type="button"
+                  onClick={() => void draftInvite()}
+                  disabled={drafting || !p.linkedinUrl || !wantsLinkedIn}
+                  className="text-xs text-accent disabled:opacity-40"
+                >
                   {drafting ? "Drafting…" : "Regenerate note"}
                 </button>
               </div>

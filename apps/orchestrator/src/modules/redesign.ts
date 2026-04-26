@@ -151,13 +151,16 @@ function markActiveNav(html: string, currentSlug: string): string {
   return html;
 }
 
-interface StudioOverlayArgs {
+export interface StudioOverlayArgs {
   displayName: string;
   tagline: string;
   bookingUrl: string;
   businessName: string;
   /** When `bookingUrl` is empty, used for the CTA so the button is not dead. */
   fallbackMailto?: string;
+  prospectId: string;
+  /** Super Engine PWA origin (no path). If unset, "Edit with AI" is disabled in the banner. */
+  pwaAppUrl?: string;
 }
 
 /** Prevent tagline/display name from breaking overlay DOM or XSS. */
@@ -169,7 +172,7 @@ function escapeStudioHtml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
-function buildStudioOverlay(a: StudioOverlayArgs): string {
+export function buildStudioOverlay(a: StudioOverlayArgs): string {
   const displayName = escapeStudioHtml(a.displayName ?? "");
   const tagline = escapeStudioHtml(a.tagline ?? "");
   const booking = (a.bookingUrl ?? "").trim();
@@ -194,20 +197,31 @@ function buildStudioOverlay(a: StudioOverlayArgs): string {
       : `<span class="se-studio-cta se-studio-cta--inactive" title="Set STUDIO_BOOKING_URL or OPERATOR_EMAIL in the studio environment">
       ${ctaInner}
     </span>`;
-  const secondaryLink =
-    hasBooking || hasMail
-      ? `<a class="se-studio-booking-link" href="${ctaHref}" ${hasBooking ? 'target="_blank" rel="noopener"' : ""}>Schedule a call →</a>`
-      : "";
+
+  const base = (a.pwaAppUrl ?? "").replace(/\/+$/, "");
+  const pid = (a.prospectId ?? "").trim();
+  const editAiBlock =
+    base && pid
+      ? `<a class="se-studio-cta se-studio-cta--ghost" href="${base.replace(/"/g, "&quot;")}/pipeline/${pid.replace(/"/g, "")}/preview" target="_blank" rel="noopener">
+      Edit with AI
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3L12 3Z"/></svg>
+    </a>`
+      : `<span class="se-studio-cta se-studio-cta--ghost se-studio-cta--inactive" title="Set PWA_APP_URL on the orchestrator so Edit with AI can open your Super Engine portal">
+      Edit with AI
+    </span>`;
+
   return `
 <!-- studio overlay (injected by Super Engine, not part of the business's content) -->
-<div id="__se-studio-banner" role="complementary" aria-label="Message from the designer">
+<div id="__se-studio-banner" role="complementary" aria-label="${displayName} — concept preview">
   <div class="se-studio-banner-card">
     <div class="se-studio-banner-body">
       <div class="se-studio-banner-eyebrow">${displayName}</div>
       <div class="se-studio-banner-copy">${tagline}</div>
-      ${secondaryLink}
     </div>
-    ${ctaBlock}
+    <div class="se-studio-cta-group">
+      ${ctaBlock}
+      ${editAiBlock}
+    </div>
     <button type="button" class="se-studio-close" aria-label="Dismiss" onclick="document.getElementById('__se-studio-banner').remove()">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
     </button>
@@ -267,15 +281,6 @@ function buildStudioOverlay(a: StudioOverlayArgs): string {
     color: #e7ebf0 !important;
     margin: 0 !important;
   }
-  #__se-studio-banner .se-studio-booking-link {
-    display: inline-block !important;
-    margin-top: 6px !important;
-    font-size: 12px !important;
-    font-weight: 600 !important;
-    color: #a8c5ff !important;
-    text-decoration: underline !important;
-  }
-  #__se-studio-banner .se-studio-booking-link:hover { color: #ffffff !important; }
   #__se-studio-banner .se-studio-cta {
     display: inline-flex !important;
     align-items: center !important;
@@ -295,6 +300,27 @@ function buildStudioOverlay(a: StudioOverlayArgs): string {
     cursor: pointer !important;
   }
   #__se-studio-banner .se-studio-cta:hover { background: #f1f3f5 !important; }
+  #__se-studio-banner .se-studio-cta-group {
+    display: flex !important;
+    flex-direction: row !important;
+    flex-wrap: wrap !important;
+    gap: 8px !important;
+    align-items: center !important;
+    flex-shrink: 0 !important;
+  }
+  #__se-studio-banner .se-studio-cta--ghost {
+    background: transparent !important;
+    color: #e7ebf0 !important;
+    border: 1px solid rgba(255,255,255,0.22) !important;
+  }
+  #__se-studio-banner .se-studio-cta--ghost:hover {
+    background: rgba(255,255,255,0.06) !important;
+    border-color: rgba(255,255,255,0.35) !important;
+  }
+  #__se-studio-banner .se-studio-cta--ghost.se-studio-cta--inactive:hover {
+    background: transparent !important;
+    border-color: rgba(255,255,255,0.22) !important;
+  }
   #__se-studio-banner .se-studio-cta--inactive {
     opacity: 0.55 !important;
     cursor: not-allowed !important;
@@ -327,10 +353,21 @@ function buildStudioOverlay(a: StudioOverlayArgs): string {
 `;
 }
 
-function injectOverlay(html: string, overlayHtml: string): string {
-  if (/__se-studio-banner/.test(html)) return html; // already present
-  if (/<\/body>/i.test(html)) return html.replace(/<\/body>/i, `${overlayHtml}\n</body>`);
-  return `${html}\n${overlayHtml}`;
+/**
+ * Removes a previously injected studio banner (any version) so deploys always
+ * pick up the current WellPlan.io template and env copy.
+ */
+export function stripStudioOverlay(html: string): string {
+  return html.replace(
+    /(?:<!--\s*studio overlay[\s\S]*?-->\s*)?<div\s+id=["']__se-studio-banner["'][^>]*>[\s\S]*?<\/div>\s*<style>[\s\S]*?#__se-studio-banner[\s\S]*?<\/style>\s*/gi,
+    "",
+  );
+}
+
+export function injectOverlay(html: string, overlayHtml: string): string {
+  const h = stripStudioOverlay(html);
+  if (/<\/body>/i.test(h)) return h.replace(/<\/body>/i, `${overlayHtml}\n</body>`);
+  return `${h}\n${overlayHtml}`;
 }
 
 function validatePage(html: string): { ok: true } | { ok: false; reason: string } {
@@ -572,6 +609,8 @@ export async function redesignProspect(db: DbClient, prospect: Prospect): Promis
       opEmail && opEmail.includes("@")
         ? `mailto:${opEmail}?subject=${encodeURIComponent("Book a 15-min call")}`
         : undefined,
+    prospectId: prospect.id,
+    pwaAppUrl: (cfg.PWA_APP_URL ?? "").trim() || undefined,
   });
 
   let files: StaticSiteFile[] = [];

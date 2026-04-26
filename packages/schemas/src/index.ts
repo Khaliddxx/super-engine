@@ -159,9 +159,18 @@ export const ServerEnvSchema = z.object({
 
   // Studio / agency overlay shown on top of the generated business site.
   // These appear only in the floating banner, never inside the business HTML.
-  STUDIO_DISPLAY_NAME: z.string().default("Independent design studio"),
-  STUDIO_BOOKING_URL: z.string().url().optional().or(z.literal("")),
-  STUDIO_TAGLINE: z.string().default("We rebuilt this as a concept for you. Like it? 15 minutes, no pitch."),
+  STUDIO_DISPLAY_NAME: z.string().default("WellPlan.io"),
+  STUDIO_BOOKING_URL: z.union([z.string().url(), z.literal("")]).default("https://wellplan.io/demo"),
+  STUDIO_TAGLINE: z
+    .string()
+    .default("Concept preview from WellPlan.io. Like the direction? 15 minutes, no pitch."),
+  /** Public URL of the Super Engine PWA (no trailing slash). Used for "Edit with AI" on preview sites. */
+  PWA_APP_URL: z.string().url().optional().or(z.literal("")),
+  /**
+   * Optional fallback for the studio preview gate password (prefer Controls → Studio preview password in DB).
+   * Never embedded in static preview HTML.
+   */
+  STUDIO_PREVIEW_EDIT_PASSWORD: z.string().optional().or(z.literal("")),
 
   JWT_SECRET: z.string().min(16),
   OPERATOR_PASSWORD: z.string().min(4),

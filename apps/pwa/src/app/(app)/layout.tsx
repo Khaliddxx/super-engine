@@ -14,14 +14,20 @@ const tabs = [
   { href: "/controls", label: "Controls", icon: Settings },
 ];
 
+/** Public unlock entry: linked from static preview sites; uses studio password instead of operator login. */
+function isPipelinePreviewStudioPath(pathname: string | null): boolean {
+  return Boolean(pathname && /^\/pipeline\/[^/]+\/preview$/.test(pathname));
+}
+
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const { token, loading } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
+  const previewStudioPublic = isPipelinePreviewStudioPath(pathname);
 
   useEffect(() => {
-    if (!loading && !token) router.replace("/login");
-  }, [token, loading, router]);
+    if (!loading && !token && !previewStudioPublic) router.replace("/login");
+  }, [token, loading, router, previewStudioPublic]);
 
   // Scroll to top on every route change. Next.js attempts this automatically
   // but Framer-Motion page transitions and our sticky bottom nav sometimes
@@ -33,7 +39,15 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     if (main) main.scrollTop = 0;
   }, [pathname]);
 
-  if (loading || !token) return null;
+  if (loading) return null;
+  if (!token && previewStudioPublic) {
+    return (
+      <div className="min-h-screen flex flex-col bg-bg">
+        <main className="flex-1">{children}</main>
+      </div>
+    );
+  }
+  if (!token) return null;
 
   return (
     <div className="min-h-screen flex flex-col">

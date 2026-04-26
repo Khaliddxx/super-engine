@@ -1,5 +1,16 @@
 import type { FastifyInstance, FastifyPluginOptions } from "fastify";
-import { and, desc, eq, gte, lte, type DbClient, prospects, campaigns, deployments } from "@super-engine/db";
+import {
+  and,
+  desc,
+  eq,
+  gte,
+  lte,
+  type DbClient,
+  prospects,
+  campaigns,
+  deployments,
+  sendLog,
+} from "@super-engine/db";
 import { requireAuth } from "../auth-guard.js";
 import { transition } from "../../modules/transitions.js";
 import { redesignProspect } from "../../modules/redesign.js";
@@ -121,6 +132,19 @@ export async function pipelineRoutes(app: FastifyInstance, opts: Opts): Promise<
       .from(deployments)
       .where(eq(deployments.prospectId, p.id))
       .orderBy(desc(deployments.createdAt));
+    const emailSendHistory = await db
+      .select({
+        id: sendLog.id,
+        status: sendLog.status,
+        kind: sendLog.kind,
+        externalRef: sendLog.externalRef,
+        error: sendLog.error,
+        sentAt: sendLog.sentAt,
+      })
+      .from(sendLog)
+      .where(and(eq(sendLog.prospectId, p.id), eq(sendLog.kind, "email_initial")))
+      .orderBy(desc(sendLog.sentAt))
+      .limit(12);
     const cleaned = {
       ...p,
       qualificationIssues: sanitizeTopIssues(p.qualificationIssues as string[] | null | undefined),
@@ -136,6 +160,7 @@ export async function pipelineRoutes(app: FastifyInstance, opts: Opts): Promise<
       prospect: cleaned,
       campaign: c,
       deployments: depHistory,
+      emailSendHistory,
       studioBookingUrl,
       studioBookingMailto,
     };
@@ -149,6 +174,10 @@ export async function pipelineRoutes(app: FastifyInstance, opts: Opts): Promise<
     if (!p.linkedinUrl) return reply.status(400).send({ error: "no_linkedin_url" });
     if (!p.redesignHtmlUrl) return reply.status(400).send({ error: "no_redesign" });
     const body = await draftInviteNote(p);
+    await db
+      .update(prospects)
+      .set({ draftLinkedinInvite: body, updatedAt: new Date() })
+      .where(eq(prospects.id, p.id));
     return { body };
   });
 
@@ -158,7 +187,37 @@ export async function pipelineRoutes(app: FastifyInstance, opts: Opts): Promise<
     if (!p) return reply.status(404).send({ error: "not_found" });
     if (!p.email) return reply.status(400).send({ error: "no_email" });
     if (!p.redesignHtmlUrl && !p.website) return reply.status(400).send({ error: "no_link_for_email_context" });
-    return await draftInitialEmail(p);
+    const draft = await draftInitialEmail(p);
+    await db
+      .update(prospects)
+      .set({
+        draftEmailSubject: draft.subject,
+        draftEmailBody: draft.body,
+        updatedAt: new Date(),
+      })
+      .where(eq(prospects.id, p.id));
+    return draft;
+  });
+
+  /** Persist invite / email fields edited in the UI (debounced from the PWA). */
+  app.post<{
+    Params: { id: string };
+    Body: {
+      draftLinkedinInvite?: string | null;
+      draftEmailSubject?: string | null;
+      draftEmailBody?: string | null;
+    };
+  }>("/:id/outreach-drafts", async (req, reply) => {
+    const db = opts.db();
+    const [p] = await db.select().from(prospects).where(eq(prospects.id, req.params.id));
+    if (!p) return reply.status(404).send({ error: "not_found" });
+    const patch: Record<string, unknown> = { updatedAt: new Date() };
+    if ("draftLinkedinInvite" in req.body) patch.draftLinkedinInvite = req.body.draftLinkedinInvite ?? null;
+    if ("draftEmailSubject" in req.body) patch.draftEmailSubject = req.body.draftEmailSubject ?? null;
+    if ("draftEmailBody" in req.body) patch.draftEmailBody = req.body.draftEmailBody ?? null;
+    if (Object.keys(patch).length <= 1) return reply.status(400).send({ error: "no_fields" });
+    await db.update(prospects).set(patch as any).where(eq(prospects.id, p.id));
+    return { ok: true };
   });
 
   app.post<{
@@ -182,7 +241,13 @@ export async function pipelineRoutes(app: FastifyInstance, opts: Opts): Promise<
       approvedSubject: req.body?.subject,
       approvedBody: req.body?.body,
     });
-    return { ok: result.sent, send: result };
+    return {
+      ok: result.sent,
+      send: result,
+      instantlyLeadId: result.externalRef ?? null,
+      instantlyHint:
+        "Instantly adds a campaign lead with your copy in custom variables. Delivery time follows the campaign sequence in Instantly (not instant Gmail from this button).",
+    };
   });
 
   // Approve a redesign — moves to APPROVED_TO_SEND and (if provided) schedules/sends an invite
@@ -208,6 +273,22 @@ export async function pipelineRoutes(app: FastifyInstance, opts: Opts): Promise<
           reason: "operator_approved_redesign",
           triggeredBy: "operator",
         });
+      }
+
+      if (
+        req.body &&
+        ("approvedMessage" in req.body ||
+          "approvedEmailSubject" in req.body ||
+          "approvedEmailBody" in req.body)
+      ) {
+        const draftUp: Record<string, unknown> = { updatedAt: new Date() };
+        if (req.body.approvedMessage !== undefined)
+          draftUp.draftLinkedinInvite = req.body.approvedMessage ?? null;
+        if (req.body.approvedEmailSubject !== undefined)
+          draftUp.draftEmailSubject = req.body.approvedEmailSubject ?? null;
+        if (req.body.approvedEmailBody !== undefined)
+          draftUp.draftEmailBody = req.body.approvedEmailBody ?? null;
+        await db.update(prospects).set(draftUp as any).where(eq(prospects.id, p.id));
       }
 
       if (req.body?.sendNow) {
