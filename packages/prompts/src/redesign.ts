@@ -32,10 +32,15 @@ export interface RedesignInput {
   assets: RedesignAssets;
   years: string;
   current_year: number;
-  template_primary_cta: string;
-  template_secondary_cta: string;
-  template_tagline: string;
-  template_services: Array<{ name: string; desc: string }>;
+  /** Per-prospect creative archetype — picked deterministically from prospect ID. */
+  archetype: { id: string; name: string; brief: string };
+  /** Free-text operator override. If present, it dominates every other instruction in the prompt. */
+  operator_instruction?: string | null;
+  /** Niche-level fallbacks. ONLY used if scraped data is empty for that field. */
+  fallback_primary_cta: string;
+  fallback_secondary_cta: string;
+  fallback_tagline: string;
+  fallback_services: Array<{ name: string; desc: string }>;
   business_contact: {
     phone: string | null;
     email: string | null;
@@ -64,24 +69,44 @@ function sitemapBlock(entries: RedesignSitemapEntry[]): string {
 }
 
 /**
- * REDESIGN V2.2
+ * REDESIGN V3
  *
- * Changes vs V2.1:
- *  - MULTI-PAGE: output is now a JSON object `{ pages: [{ slug, html }...] }`
- *    mirroring the prospect's actual sitemap. Each page shares a nav/footer.
- *  - No agency contact in the HTML. The agency pitch is added later as a
- *    deploy-time overlay on top of the rendered site; the generated HTML
- *    must only contain the BUSINESS's info (phone, email, booking URL).
- *  - Stricter anchor rules: every in-page `#hash` target must exist, every
- *    cross-page link must be to one of the generated slugs, no outbound
- *    links to the business's current domain.
- *  - Explicit navbar spec (logo left, links right, consistent gaps, mobile
- *    hamburger below 768px, no horizontal overflow).
+ * Why V3 exists: V2 was producing visually identical sites within a niche
+ * because (a) cached `verticalTemplate` data was treated as authoritative,
+ * (b) the "page-type conventions" block prescribed the same structure for
+ * every site of a type, and (c) the prompt jumped straight to HTML with no
+ * per-business creative direction. V3 fixes all three:
+ *   1. Adds an `<operator_instruction>` block at the top — when the operator
+ *      writes an edit ("make it darker", "remove testimonials"), it
+ *      dominates every other rule below.
+ *   2. Adds a `<creative_direction>` block with a per-prospect layout
+ *      ARCHETYPE (editorial, gallery-led, document, brutalist, etc.) plus
+ *      an explicit anti-template clause. Two sites of the same niche will
+ *      get different archetypes via deterministic hashing on prospect ID.
+ *   3. Demotes the niche template fields to `<fallback_intel>` and tells
+ *      Claude to ignore them unless the scraped data is empty for that
+ *      field. Stops the "every law firm = Practice Areas grid" pattern.
+ *   4. Drops the prescriptive page-type conventions list. Instead, Claude
+ *      must derive each page's content & structure from the actual scraped
+ *      content for THIS business.
  */
 export const REDESIGN_PROMPT_V2 = {
-  version: "2.2",
+  version: "3.0",
   deployedAt: "2026-04-26",
-  render: (i: RedesignInput) => `You are a senior product designer building a production-quality, MOBILE-FIRST, MULTI-PAGE website redesign for a local business.
+  render: (i: RedesignInput) => `${
+    (i.operator_instruction ?? "").trim()
+      ? `<operator_instruction priority="HIGHEST">
+The operator has reviewed this prospect and wants you to do the following.
+This OVERRIDES any conflicting rule below. Apply it visibly and confidently.
+
+${i.operator_instruction!.trim()}
+
+If the instruction asks for a different visual direction, REPLACE the archetype below — don't try to merge.
+</operator_instruction>
+
+`
+      : ""
+  }You are a senior product designer building a production-quality, MOBILE-FIRST, MULTI-PAGE website redesign for a local business.
 This is NOT a template fill-in. It is a bespoke redesign using THE BUSINESS'S OWN ASSETS (their real photos, videos, logo, brand colors) and MIRRORING their real sitemap.
 The business owner will see this on their phone in a cold outreach message. It must feel like you actually studied their site, because you did.
 
@@ -104,19 +129,42 @@ ${list((i.scraped_testimonials ?? []).map((t) => `"${t.replace(/"/g, '\\"')}"`))
 Pages crawled: ${i.scraped_pages_summary ?? "(homepage only)"}
 </business>
 
+<creative_direction>
+ARCHETYPE for this prospect: **${i.archetype.name}** (id=${i.archetype.id})
+${i.archetype.brief}
+
+Anti-template rule: do NOT default to the most obvious layout for this niche.
+A law firm should not automatically look like every other law firm. A nightclub
+should not automatically be a black-and-neon hero stack. Lean into the chosen
+archetype above — pick layout choices that another agency would be afraid to
+ship for this niche, but that genuinely fit THIS business's scraped content.
+
+Concrete things that count as "templated" (avoid):
+  • A 3-equal-cards "services" / "practice areas" grid as the home's primary section.
+  • A hero with a centered headline + two side-by-side CTAs and nothing else above the fold.
+  • Generic "Why choose us" / "Our process" sections with icon + title + paragraph trios.
+  • Pasting the business name into a copy slot you'd have written before reading their site.
+
+Concrete things that count as bespoke (do):
+  • Asymmetric layouts. Editorial pull-quotes set in display type. Sidebars.
+  • A homepage section structure that's specific to THIS business's actual offerings,
+    not the niche-generic ones.
+  • A typographic decision (a real display face, ligatures, a bold case treatment, an
+    angular grotesk vs. a refined serif) that signals the brand's personality.
+  • Real photo treatments — duotones, full-bleed editorial spreads, layered crops.
+</creative_direction>
+
 <sitemap_to_generate>
-Generate these pages, in order. Each page must share the SAME nav and footer markup, but each page's main content differs by page type:
+Generate these pages, in order. Each page must share the SAME nav and footer
+markup, but each page's main content differs based on what THIS business
+actually has on their site (see scraped data above):
+
 ${sitemapBlock(i.sitemap)}
 
-Page-type conventions:
-- index.html (home) — hero + mini-summaries linking to each other page + booking CTA + 1 social-proof strip
-- about.html — story, team, values, visuals. Use scraped about copy verbatim where possible.
-- services.html / treatments.html — full list of services/treatments with real or adapted descriptions
-- menu.html — itemized list of dishes/drinks if scraped, otherwise categorized sections
-- rooms.html — room/venue/space tiles with imagery
-- gallery.html — image grid using the real scraped images
-- team.html — team members (if scraped names are available; otherwise skip)
-- contact.html — phone, email, address, map iframe (OpenStreetMap), booking widget link if provided
+For each page, decide its content by reading the scraped snippet + page type
++ the business's real services/copy. Do NOT auto-fill from a niche recipe.
+The goal is "if you opened the live site and reorganized it beautifully" —
+not "what does a generic <type> page look like?".
 </sitemap_to_generate>
 
 <real_assets>
@@ -140,13 +188,18 @@ Brand fonts detected: ${i.assets.brandFonts.join(", ") || "(none — pick a mode
 Social links: ${JSON.stringify(i.assets.socials)}
 </real_assets>
 
-<vertical_intel>
-Tagline direction: ${i.template_tagline}
-Primary CTA label: ${i.template_primary_cta}
-Secondary CTA label: ${i.template_secondary_cta}
-Fallback service descriptions if scraped list is sparse:
-${JSON.stringify(i.template_services)}
-</vertical_intel>
+<fallback_intel ignore_unless_scraped_data_is_empty="true">
+You may IGNORE this entire block. It is niche-generic advice that should
+ONLY be used if the corresponding scraped field above is empty (no services,
+no copy, no testimonials). Never let these labels become the dominant voice
+of the site — the business's own scraped content is always primary.
+
+Tagline direction (use only if no usable scraped copy): ${i.fallback_tagline}
+Primary CTA label suggestion: ${i.fallback_primary_cta}
+Secondary CTA label suggestion: ${i.fallback_secondary_cta}
+Service shells if scraped list is empty:
+${JSON.stringify(i.fallback_services)}
+</fallback_intel>
 
 <business_contact>
 This is the BUSINESS's own contact info, pulled from their live site. Use these in the contact section and as the targets of CTAs. Do NOT use any agency / designer contact info — there is none in this prompt on purpose.
@@ -197,13 +250,20 @@ Existing booking engine URL (if any): ${i.business_contact.bookingUrl ?? "(none)
 26. Same --var names on every page.
 
 ## Content
-27. Home: short hero headline (≤ 10 words), one-sentence subhead, a primary CTA and a secondary CTA, then 2-4 "overview cards" each linking to a sibling page. Include a social-proof strip (testimonials block) if testimonials were scraped.
+27. Home: a hero that fits the chosen archetype (NOT necessarily centered + two CTAs), then 2-5 sections that reflect THIS business's actual offerings — not a generic "overview cards" grid. Mix section types: long-form editorial passages, image-led spreads, single-column copy with a pull-quote, ranked lists, two-column splits. The home page is a magazine cover for this business, not a Squarespace template.
 28. About: lift 1-2 phrases from scraped About copy. Do NOT invent biography.
-29. Services/treatments/menu: prefer scraped items verbatim. If fewer than 3, supplement with vertical_intel fallback adapted to this business's voice.
-30. Gallery (if present): responsive image grid, lazy-loaded.
+29. Services/treatments/menu: prefer scraped items verbatim. If fewer than 3, supplement with fallback_intel — but ONLY if scraped is empty. Vary how the items are presented: a numbered editorial list, an asymmetric staggered grid, a tabbed deep-dive, a single hero feature with smaller cards beneath. NEVER 3-equal-cards as the default.
+30. Gallery (if present): responsive image grid, lazy-loaded — but vary the grid (mix wide and tall tiles, or use a horizontal scroller, or a single-row marquee).
 31. Contact: phone/email/address as scraped, <a href="tel:...">, <a href="mailto:...">. If bookingUrl scraped, show a big "Book now" button targeting it with target="_blank" rel="noopener". Map iframe from OpenStreetMap (not Google Maps) with the address query.
 32. Testimonials: render at most 2 per page, verbatim, attributed as "Verified Google review". Never fabricate reviewer names.
 33. Footer: copyright year = ${i.current_year}. Business name. Social icons from scraped socials only. Short "About" sentence. Sibling page links.
+
+## Differentiation self-check (before you output)
+Before returning the JSON, mentally compare your draft to the most obvious "default
+${i.niche} website" you can imagine. If your hero/practice-areas/contact structure
+matches what 80% of ${i.niche} sites already do, REWRITE the home page using the
+chosen archetype. The reviewer is checking specifically for "this looks different
+from the last 5 ${i.niche}s I saw".
 
 ## CTAs (MUST actually work)
 34. Primary CTA on home hero → bookingUrl if present (external, target=_blank rel=noopener), else contact.html#book.

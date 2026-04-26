@@ -21,6 +21,7 @@ async function runStartupMigrations(): Promise<void> {
     await d.execute(rawSql`ALTER TABLE "prospects" ADD COLUMN IF NOT EXISTS "scraped_sitemap" jsonb`);
     await d.execute(rawSql`ALTER TABLE "prospects" ADD COLUMN IF NOT EXISTS "site_strength_score" numeric(4, 1)`);
     await d.execute(rawSql`ALTER TABLE "prospects" ADD COLUMN IF NOT EXISTS "site_strength_signals" jsonb`);
+    await d.execute(rawSql`ALTER TABLE "prospects" ADD COLUMN IF NOT EXISTS "redesign_instruction" text`);
     logger.info("startup migrations applied");
   } catch (err) {
     logger.error({ err: String(err) }, "startup migrations failed");

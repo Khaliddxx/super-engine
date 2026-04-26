@@ -5,6 +5,7 @@ import { deployStaticSite, type StaticSiteFile } from "../integrations/vercel.js
 import { env } from "../lib/env.js";
 import { transition } from "./transitions.js";
 import { getOrCreateTemplate } from "./template.js";
+import { pickArchetype } from "./archetypes.js";
 import { logger } from "../lib/logger.js";
 
 // ─────────────────────────────────────────────
@@ -389,6 +390,12 @@ export async function redesignProspect(db: DbClient, prospect: Prospect): Promis
 
   const businessHost = hostOf(prospect.website);
 
+  const archetype = pickArchetype(prospect.id);
+  logger.info(
+    { prospectId: prospect.id, archetype: archetype.id, hasOperatorInstruction: Boolean(prospect.redesignInstruction) },
+    "redesign creative direction selected",
+  );
+
   const prompt = REDESIGN_PROMPT_V2.render({
     name: prospect.businessName,
     niche: prospect.niche,
@@ -402,10 +409,12 @@ export async function redesignProspect(db: DbClient, prospect: Prospect): Promis
     assets,
     years,
     current_year: new Date().getFullYear(),
-    template_primary_cta: template.primaryCta,
-    template_secondary_cta: template.secondaryCta,
-    template_tagline: template.tagline,
-    template_services: (template.services as Array<{ name: string; desc: string }>) ?? [],
+    archetype,
+    operator_instruction: prospect.redesignInstruction ?? null,
+    fallback_primary_cta: template.primaryCta,
+    fallback_secondary_cta: template.secondaryCta,
+    fallback_tagline: template.tagline,
+    fallback_services: (template.services as Array<{ name: string; desc: string }>) ?? [],
     business_contact: {
       phone: prospect.phone ?? null,
       email: prospect.email ?? null,
@@ -420,7 +429,10 @@ export async function redesignProspect(db: DbClient, prospect: Prospect): Promis
   let pages: ClaudePage[] | null = null;
   let lastFailure: string | null = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
-    const raw = await claudeText(prompt, { maxTokens: 20000, temperature: 0.4 });
+    // Higher temp on retry so the second attempt explores a different visual
+    // path — fixes the "every regenerate looks the same" complaint.
+    const temperature = attempt === 1 ? 0.85 : 1.0;
+    const raw = await claudeText(prompt, { maxTokens: 20000, temperature });
     const parsed = parseClaudeOutput(raw);
     if (parsed && parsed.length > 0) {
       pages = parsed;
@@ -510,6 +522,8 @@ export async function redesignProspect(db: DbClient, prospect: Prospect): Promis
       usedHeroImage: Boolean(assets.heroImage),
       pageSlugs: validatedSlugs,
       promptVersion: REDESIGN_PROMPT_V2.version,
+      archetypeId: archetype.id,
+      operatorInstruction: prospect.redesignInstruction ?? null,
     },
   });
 

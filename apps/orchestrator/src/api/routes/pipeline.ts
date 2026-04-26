@@ -219,28 +219,60 @@ export async function pipelineRoutes(app: FastifyInstance, opts: Opts): Promise<
     return { ok: true };
   });
 
-  app.post<{ Params: { id: string } }>("/:id/regenerate", async (req, reply) => {
-    const db = opts.db();
-    const [p] = await db.select().from(prospects).where(eq(prospects.id, req.params.id));
-    if (!p) return reply.status(404).send({ error: "not_found" });
-    if (!["QUALIFIED", "REDESIGNED"].includes(p.state)) {
-      return reply.status(400).send({ error: "wrong_state", state: p.state });
-    }
-    if (p.state !== "QUALIFIED") {
-      await transition({
-        db,
-        prospectId: p.id,
-        from: p.state as any,
-        to: "QUALIFIED",
-        reason: "regenerate_requested",
-        triggeredBy: "operator",
-      });
-    }
-    const [refreshed] = await db.select().from(prospects).where(eq(prospects.id, p.id));
-    if (!refreshed) return reply.status(404).send({ error: "not_found_after_transition" });
-    await redesignProspect(db, refreshed);
-    return { ok: true };
-  });
+  app.post<{ Params: { id: string }; Body: { instruction?: string | null } }>(
+    "/:id/regenerate",
+    async (req, reply) => {
+      const db = opts.db();
+      const [p] = await db.select().from(prospects).where(eq(prospects.id, req.params.id));
+      if (!p) return reply.status(404).send({ error: "not_found" });
+      if (!["QUALIFIED", "REDESIGNED"].includes(p.state)) {
+        return reply.status(400).send({ error: "wrong_state", state: p.state });
+      }
+
+      // Save the operator instruction (or clear it if explicitly null/empty).
+      // Persisting BEFORE the transition means the next redesignProspect call
+      // sees it on the refreshed row.
+      if (req.body && "instruction" in req.body) {
+        const next = req.body.instruction?.trim() || null;
+        await db.update(prospects).set({ redesignInstruction: next, updatedAt: new Date() }).where(eq(prospects.id, p.id));
+      }
+
+      if (p.state !== "QUALIFIED") {
+        await transition({
+          db,
+          prospectId: p.id,
+          from: p.state as any,
+          to: "QUALIFIED",
+          reason: "regenerate_requested",
+          triggeredBy: "operator",
+        });
+      }
+      const [refreshed] = await db.select().from(prospects).where(eq(prospects.id, p.id));
+      if (!refreshed) return reply.status(404).send({ error: "not_found_after_transition" });
+      await redesignProspect(db, refreshed);
+      return { ok: true, instruction: refreshed.redesignInstruction ?? null };
+    },
+  );
+
+  /**
+   * Save (or clear) the operator's free-text design instruction WITHOUT
+   * triggering a regenerate. Useful when iterating on the prompt before
+   * burning Claude credits. Pass `instruction: null` (or empty string) to clear.
+   */
+  app.post<{ Params: { id: string }; Body: { instruction?: string | null } }>(
+    "/:id/instruction",
+    async (req, reply) => {
+      const db = opts.db();
+      const [p] = await db.select().from(prospects).where(eq(prospects.id, req.params.id));
+      if (!p) return reply.status(404).send({ error: "not_found" });
+      const next = req.body?.instruction?.trim() || null;
+      await db
+        .update(prospects)
+        .set({ redesignInstruction: next, updatedAt: new Date() })
+        .where(eq(prospects.id, p.id));
+      return { ok: true, instruction: next };
+    },
+  );
 
   /**
    * Full regenerate: re-ENRICH (to backfill scrapedAssets with logo/hero

@@ -32,6 +32,8 @@ export default function PipelineDetailPage() {
 
   const [inviteText, setInviteText] = useState("");
   const [drafting, setDrafting] = useState(false);
+  const [instruction, setInstruction] = useState<string>("");
+  const [instructionLoaded, setInstructionLoaded] = useState(false);
 
   async function draftInvite() {
     setDrafting(true);
@@ -52,6 +54,14 @@ export default function PipelineDetailPage() {
      
   }, [data?.prospect?.state]);
 
+  useEffect(() => {
+    // Sync the local textarea with the persisted instruction once on load.
+    if (!instructionLoaded && data?.prospect) {
+      setInstruction(data.prospect.redesignInstruction ?? "");
+      setInstructionLoaded(true);
+    }
+  }, [data?.prospect, instructionLoaded]);
+
   const approve = useMutation({
     mutationFn: (sendNow: boolean) =>
       api(`/api/pipeline/${id}/approve`, {
@@ -67,12 +77,29 @@ export default function PipelineDetailPage() {
   });
 
   const regen = useMutation({
-    mutationFn: () => api(`/api/pipeline/${id}/regenerate`, { method: "POST", body: {} }),
+    mutationFn: (withInstruction: boolean) =>
+      api(`/api/pipeline/${id}/regenerate`, {
+        method: "POST",
+        body: withInstruction ? { instruction: instruction.trim() || null } : {},
+      }),
     onSuccess: () => {
       toast.success("Regenerated");
       refetch();
     },
     onError: (e: any) => toast.error(e.message ?? "Regenerate failed"),
+  });
+
+  const saveInstruction = useMutation({
+    mutationFn: () =>
+      api(`/api/pipeline/${id}/instruction`, {
+        method: "POST",
+        body: { instruction: instruction.trim() || null },
+      }),
+    onSuccess: () => {
+      toast.success("Instruction saved");
+      refetch();
+    },
+    onError: (e: any) => toast.error(e.message ?? "Save failed"),
   });
 
   const reject = useMutation({
@@ -251,9 +278,48 @@ export default function PipelineDetailPage() {
               <p className="text-[11px] text-muted text-right">{inviteText.length}/299</p>
             </div>
 
+            <div className="card p-4 space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-xs uppercase tracking-wider text-muted">
+                  Tell the designer what to change
+                </p>
+                {p.redesignInstruction && instruction === (p.redesignInstruction ?? "") && (
+                  <span className="text-[10px] text-accent">saved</span>
+                )}
+              </div>
+              <textarea
+                rows={3}
+                value={instruction}
+                onChange={(e) => setInstruction(e.target.value)}
+                className="input resize-none text-sm"
+                placeholder='e.g. "make it darker, more brutalist, drop the testimonials" or "use editorial layout with serif headlines"'
+              />
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => saveInstruction.mutate()}
+                  disabled={saveInstruction.isPending || instruction === (p.redesignInstruction ?? "")}
+                  className="btn-secondary text-xs flex-1"
+                >
+                  {saveInstruction.isPending ? "Saving…" : "Save"}
+                </button>
+                <button
+                  onClick={() => regen.mutate(true)}
+                  disabled={regen.isPending}
+                  className="btn-primary text-xs flex-1"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  {regen.isPending ? "Regenerating…" : "Apply & regenerate"}
+                </button>
+              </div>
+              <p className="text-[11px] text-muted leading-snug">
+                Free-text instruction. Persists until you clear it. Overrides the default
+                creative direction on every regenerate.
+              </p>
+            </div>
+
             <div className="grid grid-cols-2 gap-2">
               <button
-                onClick={() => regen.mutate()}
+                onClick={() => regen.mutate(false)}
                 disabled={regen.isPending}
                 className="btn-secondary"
               >

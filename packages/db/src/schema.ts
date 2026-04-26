@@ -111,6 +111,11 @@ export const prospects = pgTable(
     rejectionReason: text("rejection_reason"),
     screenshotUrl: text("screenshot_url"),
 
+    // operator-authored design instruction — free-text directive that
+    // overrides defaults on the next regenerate. Survives regens until
+    // explicitly cleared.
+    redesignInstruction: text("redesign_instruction"),
+
     // redesign
     variantPalette: varchar("variant_palette", { length: 64 }),
     variantFonts: varchar("variant_fonts", { length: 64 }),
