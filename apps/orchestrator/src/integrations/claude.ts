@@ -56,6 +56,43 @@ export async function claudeVision(
   return block.text;
 }
 
+export async function claudeVisionMulti(
+  prompt: string,
+  imageUrls: string[],
+  opts: { maxTokens?: number; model?: string } = {},
+): Promise<string> {
+  const images = await Promise.all(
+    imageUrls.map(async (imageUrl) => {
+      const imgRes = await fetch(imageUrl);
+      if (!imgRes.ok) throw new Error(`Failed to fetch screenshot: ${imgRes.status}`);
+      const contentType = imgRes.headers.get("content-type") ?? "image/png";
+      const buf = Buffer.from(await imgRes.arrayBuffer());
+      return {
+        type: "image" as const,
+        source: {
+          type: "base64" as const,
+          media_type: contentType as "image/png" | "image/jpeg",
+          data: buf.toString("base64"),
+        },
+      };
+    }),
+  );
+
+  const res = await claude().messages.create({
+    model: opts.model ?? CLAUDE_MODEL(),
+    max_tokens: opts.maxTokens ?? 2400,
+    messages: [
+      {
+        role: "user",
+        content: [...images, { type: "text", text: prompt }],
+      },
+    ],
+  });
+  const block = res.content[0];
+  if (!block || block.type !== "text") throw new Error("No text content in Claude vision response");
+  return block.text;
+}
+
 export function extractJson<T>(text: string): T {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   const raw = fenced ? fenced[1]! : text;

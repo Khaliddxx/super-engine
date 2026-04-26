@@ -53,6 +53,18 @@ export const QualifyResultSchema = z.object({
 });
 export type QualifyResult = z.infer<typeof QualifyResultSchema>;
 
+export const RedesignQualityAuditSchema = z.object({
+  pass: z.boolean(),
+  original_score: z.number().min(0).max(10),
+  redesign_score: z.number().min(0).max(10),
+  delta: z.number(),
+  verdict: z.string(),
+  fatal_issues: z.array(z.string()),
+  better_than_original: z.array(z.string()),
+  repair_instruction: z.string(),
+});
+export type RedesignQualityAudit = z.infer<typeof RedesignQualityAuditSchema>;
+
 export const TemplateServiceSchema = z.object({
   name: z.string(),
   desc: z.string(),

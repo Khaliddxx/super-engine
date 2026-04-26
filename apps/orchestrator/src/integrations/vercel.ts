@@ -86,11 +86,13 @@ export async function deployStaticSite(args: {
   files: StaticSiteFile[];
   businessName: string;
   prospectId: string;
+  projectNameSuffix?: string;
 }): Promise<DeployResult> {
   if (args.files.length === 0) throw new Error("deployStaticSite: no files provided");
   const teamId = env().VERCEL_TEAM_ID;
   const qs = teamId ? `?teamId=${teamId}` : "";
-  const projectName = `${slugify(args.businessName)}-${shortHash(args.prospectId)}`;
+  const suffix = args.projectNameSuffix ? `-${slugify(args.projectNameSuffix).slice(0, 18)}` : "";
+  const projectName = `${slugify(args.businessName)}-${shortHash(args.prospectId)}${suffix}`.slice(0, 63);
 
   const files = args.files.map((f) => ({
     file: f.file,

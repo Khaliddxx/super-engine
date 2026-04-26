@@ -6,6 +6,7 @@ import { env } from "../lib/env.js";
 import { transition } from "./transitions.js";
 import { getOrCreateTemplate } from "./template.js";
 import { pickArchetype } from "./archetypes.js";
+import { checkRedesignQuality } from "./redesign-quality.js";
 import { logger } from "../lib/logger.js";
 
 // ─────────────────────────────────────────────
@@ -472,8 +473,8 @@ export async function redesignProspect(db: DbClient, prospect: Prospect): Promis
     businessName: prospect.businessName,
   });
 
-  const files: StaticSiteFile[] = [];
-  const validatedSlugs: string[] = [];
+  let files: StaticSiteFile[] = [];
+  let validatedSlugs: string[] = [];
 
   for (const slug of sitemap.map((s) => s.slug)) {
     const raw = pagesBySlug.get(slug);
@@ -501,7 +502,130 @@ export async function redesignProspect(db: DbClient, prospect: Prospect): Promis
   }
 
   // ─────────────────────────────────────────────
-  //  Deploy
+  //  Visual quality gate
+  // ─────────────────────────────────────────────
+  //
+  // Do NOT deploy straight to the public clean URL. A bad regenerate would
+  // overwrite the project's production alias and make the stored preview worse
+  // even if we later decide not to save it. Instead:
+  //   1. Deploy the candidate to a throwaway QA project.
+  //   2. Screenshot the original + candidate on mobile.
+  //   3. Let Claude Vision compare them with a strict "must be clearly better"
+  //      rubric.
+  //   4. Only then deploy the accepted files to the clean public project.
+  let qaDeploy = await deployStaticSite({
+    files,
+    businessName: prospect.businessName,
+    prospectId: prospect.id,
+    projectNameSuffix: `qa-${Date.now().toString(36)}`,
+  });
+
+  let quality = await checkRedesignQuality({
+    prospect,
+    candidateUrl: qaDeploy.url,
+  });
+
+  if (!quality.ok && quality.audit?.repair_instruction) {
+    logger.warn(
+      {
+        prospectId: prospect.id,
+        qaUrl: qaDeploy.url,
+        audit: quality.audit,
+      },
+      "redesign failed first quality gate; attempting repair",
+    );
+
+    const repairPrompt = `${prompt}
+
+<quality_repair_instruction priority="HIGHEST">
+Your previous attempt failed the visual QA gate against the original mobile site.
+Do not make a small cosmetic change. Rework the design so it is plainly more
+credible, readable, and conversion-ready than the original.
+
+QA verdict: ${quality.audit.verdict}
+Fatal issues:
+${quality.audit.fatal_issues.map((issue) => `- ${issue}`).join("\n") || "- (none)"}
+
+Repair instruction:
+${quality.audit.repair_instruction}
+</quality_repair_instruction>
+
+Return ONLY the JSON object, beginning with {.`; 
+
+    const raw = await claudeText(repairPrompt, { maxTokens: 20000, temperature: 0.72 });
+    const repairedPages = parseClaudeOutput(raw);
+    if (repairedPages?.length) {
+      const repairedBySlug = new Map<string, string>();
+      for (const p of repairedPages) {
+        const normSlug = p.slug.endsWith(".html") ? p.slug : `${p.slug}.html`;
+        if (validSlugs.has(normSlug)) repairedBySlug.set(normSlug, p.html);
+      }
+      if (!repairedBySlug.has("index.html") && repairedPages[0]) {
+        repairedBySlug.set("index.html", repairedPages[0].html);
+      }
+
+      const repairedFiles: StaticSiteFile[] = [];
+      const repairedSlugs: string[] = [];
+      for (const slug of sitemap.map((s) => s.slug)) {
+        const rawPage = repairedBySlug.get(slug);
+        if (!rawPage) continue;
+        let cleaned = stripDashes(rawPage);
+        cleaned = stripOutboundToBusinessDomain(cleaned, businessHost);
+        cleaned = rewriteSiblingNav(cleaned, validSlugs);
+        cleaned = fixAnchorTargets(cleaned);
+        cleaned = markActiveNav(cleaned, slug);
+        cleaned = injectOverlay(cleaned, overlay);
+
+        const v = validatePage(cleaned);
+        if (!v.ok) {
+          logger.warn({ slug, reason: v.reason, prospectId: prospect.id }, "repaired page validation failed, skipping");
+          continue;
+        }
+        repairedFiles.push({ file: slug, data: cleaned });
+        repairedSlugs.push(slug);
+      }
+
+      if (repairedFiles.some((f) => f.file === "index.html")) {
+        const repairedQaDeploy = await deployStaticSite({
+          files: repairedFiles,
+          businessName: prospect.businessName,
+          prospectId: prospect.id,
+          projectNameSuffix: `qa-repair-${Date.now().toString(36)}`,
+        });
+        const repairedQuality = await checkRedesignQuality({
+          prospect,
+          candidateUrl: repairedQaDeploy.url,
+        });
+        if (repairedQuality.ok) {
+          files = repairedFiles;
+          validatedSlugs = repairedSlugs;
+          qaDeploy = repairedQaDeploy;
+          quality = repairedQuality;
+        } else {
+          quality = repairedQuality;
+          qaDeploy = repairedQaDeploy;
+        }
+      }
+    }
+  }
+
+  if (!quality.ok) {
+    logger.warn(
+      {
+        prospectId: prospect.id,
+        qaUrl: qaDeploy.url,
+        audit: quality.audit,
+      },
+      "redesign failed quality gate; keeping previous preview",
+    );
+    const verdict = quality.audit?.verdict ?? "candidate was not clearly better than original";
+    const repair = quality.audit?.repair_instruction ?? "";
+    await handleRedesignFailure(db, prospect, `quality_gate_failed:${verdict}${repair ? ` | ${repair}` : ""}`.slice(0, 420));
+    return;
+  }
+
+  // ─────────────────────────────────────────────
+  //  Deploy accepted preview
   // ─────────────────────────────────────────────
   const deploy = await deployStaticSite({
     files,
@@ -524,6 +648,13 @@ export async function redesignProspect(db: DbClient, prospect: Prospect): Promis
       promptVersion: REDESIGN_PROMPT_V2.version,
       archetypeId: archetype.id,
       operatorInstruction: prospect.redesignInstruction ?? null,
+      qualityGate: {
+        promptVersion: "1.0",
+        qaUrl: qaDeploy.url,
+        originalScreenshotUrl: quality.originalScreenshotUrl,
+        candidateScreenshotUrl: quality.candidateScreenshotUrl,
+        audit: quality.audit,
+      },
     },
   });
 
