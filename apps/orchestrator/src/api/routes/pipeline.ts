@@ -233,7 +233,7 @@ export async function pipelineRoutes(app: FastifyInstance, opts: Opts): Promise<
     if (channel !== "email" && channel !== "both") {
       return reply.status(400).send({ error: "email_channel_disabled", outreachChannel: channel });
     }
-    if (!["ENRICHED", "REDESIGNED", "APPROVED_TO_SEND"].includes(p.state)) {
+    if (!["ENRICHED", "REDESIGNED", "APPROVED_TO_SEND", "REDESIGN_FAILED"].includes(p.state)) {
       return reply.status(400).send({ error: "wrong_state", state: p.state });
     }
     if (!p.email) return reply.status(400).send({ error: "no_email" });
@@ -409,11 +409,26 @@ export async function pipelineRoutes(app: FastifyInstance, opts: Opts): Promise<
     const db = opts.db();
     const [p] = await db.select().from(prospects).where(eq(prospects.id, req.params.id));
     if (!p) return reply.status(404).send({ error: "not_found" });
-    if (p.state !== "ENRICHED") {
-      return reply.status(400).send({ error: "wrong_state", expected: "ENRICHED", state: p.state });
+    if (p.state !== "ENRICHED" && p.state !== "REDESIGN_FAILED") {
+      return reply.status(400).send({ error: "wrong_state", expected: "ENRICHED|REDESIGN_FAILED", state: p.state });
     }
     try {
-      await redesignProspect(db, p);
+      if (p.state === "REDESIGN_FAILED") {
+        await transition({
+          db,
+          prospectId: p.id,
+          from: "REDESIGN_FAILED",
+          to: "ENRICHED",
+          reason: "operator_retry_redesign",
+          triggeredBy: "operator",
+          patch: { rejectionReason: null },
+        });
+        const [fresh] = await db.select().from(prospects).where(eq(prospects.id, p.id));
+        if (!fresh) return reply.status(404).send({ error: "not_found" });
+        await redesignProspect(db, fresh);
+      } else {
+        await redesignProspect(db, p);
+      }
       return { ok: true };
     } catch (err) {
       return reply.status(502).send({ error: "redesign_failed", detail: String(err) });
@@ -462,7 +477,7 @@ export async function pipelineRoutes(app: FastifyInstance, opts: Opts): Promise<
       const db = opts.db();
       const [p] = await db.select().from(prospects).where(eq(prospects.id, req.params.id));
       if (!p) return reply.status(404).send({ error: "not_found" });
-      if (!["QUALIFIED", "ENRICHED", "REDESIGNED"].includes(p.state)) {
+      if (!["QUALIFIED", "ENRICHED", "REDESIGNED", "REDESIGN_FAILED"].includes(p.state)) {
         return reply.status(400).send({ error: "wrong_state", state: p.state });
       }
 
@@ -482,6 +497,16 @@ export async function pipelineRoutes(app: FastifyInstance, opts: Opts): Promise<
           to: "QUALIFIED",
           reason: "regenerate_requested",
           triggeredBy: "operator",
+        });
+      } else if (p.state === "REDESIGN_FAILED") {
+        await transition({
+          db,
+          prospectId: p.id,
+          from: "REDESIGN_FAILED",
+          to: "QUALIFIED",
+          reason: "regenerate_requested",
+          triggeredBy: "operator",
+          patch: { rejectionReason: null },
         });
       }
       const [refreshed] = await db.select().from(prospects).where(eq(prospects.id, p.id));
@@ -521,7 +546,7 @@ export async function pipelineRoutes(app: FastifyInstance, opts: Opts): Promise<
    * Full regenerate: re-ENRICH (to backfill scrapedAssets with logo/hero
    * images/brand colors/fonts) and then re-REDESIGN with the current V2
    * prompt. Use this on prospects redesigned before asset extraction shipped.
-   * Safe to call on REDESIGNED, APPROVED_TO_SEND, or REJECTED prospects.
+   * Safe to call on REDESIGNED, APPROVED_TO_SEND, REJECTED, or REDESIGN_FAILED prospects.
    */
   app.post<{ Params: { id: string } }>("/:id/regenerate-full", async (req, reply) => {
     const db = opts.db();

@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
-import { ChevronRight, Sparkles, AlertCircle, Check, Send, Inbox, Ban } from "lucide-react";
+import { ChevronRight, Sparkles, AlertCircle, AlertTriangle, Check, Send, Inbox, Ban } from "lucide-react";
 import { api } from "../../../lib/api";
 import { SkeletonRowList } from "../../../components/skeleton";
 import { useState } from "react";
@@ -30,6 +30,13 @@ const WINDOWS: Array<{ key: string; label: string }> = [
 ];
 
 const GROUPS: Array<{ key: string; label: string; states: string[]; color: string; icon: React.FC<any> }> = [
+  {
+    key: "redesign_failed",
+    label: "Redesign failed — retry",
+    states: ["REDESIGN_FAILED"],
+    color: "text-amber-400",
+    icon: AlertTriangle,
+  },
   { key: "redesigned", label: "Redesigned — review & send", states: ["REDESIGNED"], color: "text-accent", icon: Sparkles },
   { key: "approved", label: "Approved to send", states: ["APPROVED_TO_SEND"], color: "text-yellow-400", icon: Send },
   { key: "sent", label: "Sent / awaiting", states: ["SENT", "AWAITING", "FOLLOWUP_1", "FOLLOWUP_2"], color: "text-blue-400", icon: Inbox },
@@ -46,7 +53,15 @@ export default function PipelinePage() {
     refetchInterval: 15_000,
     placeholderData: (prev) => prev,
   });
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({ redesigned: true, approved: true });
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({
+    redesign_failed: true,
+    redesigned: true,
+    approved: true,
+    in_progress: true,
+    rejected: true,
+    sent: false,
+    responded: false,
+  });
   const items = data?.items ?? [];
 
   return (
@@ -96,7 +111,7 @@ export default function PipelinePage() {
                 <div className="border-t border-border divide-y divide-border">
                   {rows.slice(0, 50).map((r) => {
                     const stuck =
-                      ["NEW", "ENRICHED", "QUALIFIED"].includes(r.state) &&
+                      (["NEW", "ENRICHED", "QUALIFIED"].includes(r.state) || r.state === "REDESIGN_FAILED") &&
                       Date.now() - new Date(r.updatedAt).getTime() > 2 * 60 * 60 * 1000;
                     return (
                       <Link

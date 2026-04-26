@@ -320,13 +320,14 @@ export default function PipelineDetailPage() {
   const p = data.prospect;
   const isReviewable = p.state === "REDESIGNED" || p.state === "APPROVED_TO_SEND";
   const isRejected = p.state === "REJECTED";
+  const isRedesignFailed = p.state === "REDESIGN_FAILED";
   const outreachChannel = data.campaign?.outreachChannel ?? "both";
   const wantsLinkedIn = outreachChannel === "linkedin" || outreachChannel === "both";
   const wantsEmail = outreachChannel === "email" || outreachChannel === "both";
   const canSendLinkedIn = !wantsLinkedIn || Boolean(p.linkedinUrl && inviteText.trim());
   const canSendEmail = !wantsEmail || Boolean(p.email && emailSubject.trim() && emailBody.trim());
   const hasAnySendTarget = Boolean((wantsLinkedIn && p.linkedinUrl) || (wantsEmail && p.email));
-  const emailWorkflowStates = ["ENRICHED", "REDESIGNED", "APPROVED_TO_SEND"];
+  const emailWorkflowStates = ["ENRICHED", "REDESIGNED", "APPROVED_TO_SEND", "REDESIGN_FAILED"];
   const canShowEmailWorkflow = wantsEmail && emailWorkflowStates.includes(p.state);
   const channelLabel =
     outreachChannel === "both" ? "LinkedIn + Email" : outreachChannel === "email" ? "Email only" : "LinkedIn only";
@@ -427,7 +428,40 @@ export default function PipelineDetailPage() {
               Retry redesign (stuck 30m+)
             </button>
           )}
+          {isRedesignFailed && (
+            <button
+              type="button"
+              onClick={() => retryRedesign.mutate()}
+              disabled={retryRedesign.isPending}
+              className="btn-secondary w-full mt-3 text-xs border-amber-500/40"
+            >
+              Retry redesign
+            </button>
+          )}
         </div>
+
+        {isRedesignFailed && (
+          <div className="card p-4 border-amber-500/40 bg-amber-500/5 space-y-3">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2 text-amber-300">
+                <AlertTriangle className="w-4 h-4" />
+                <p className="text-sm font-medium">Redesign did not complete</p>
+              </div>
+              <p className="text-sm text-fg/80">
+                {p.rejectionReason ?? "No preview was saved. You can retry redesign or send email using the live site as context."}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => retryRedesign.mutate()}
+              disabled={retryRedesign.isPending}
+              className="btn w-full border-amber-500/30 bg-amber-500/10 hover:bg-amber-500/20"
+            >
+              <RotateCw className={`w-4 h-4 ${retryRedesign.isPending ? "animate-spin" : ""}`} />
+              {retryRedesign.isPending ? "Queueing…" : "Retry redesign"}
+            </button>
+          </div>
+        )}
 
         {isRejected && (
           <div className="card p-4 border-danger/40 bg-danger/5 space-y-3">

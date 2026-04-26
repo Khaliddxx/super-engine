@@ -494,7 +494,7 @@ async function handleRedesignFailure(db: DbClient, prospect: Prospect, reason: s
     db,
     prospectId: prospect.id,
     from: prospect.state as any,
-    to: "REJECTED",
+    to: "REDESIGN_FAILED",
     reason: "redesign_generation_failed",
     patch: { rejectionReason: `redesign_generation_failed:${reason}` },
   });

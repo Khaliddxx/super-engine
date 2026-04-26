@@ -15,6 +15,7 @@ export async function dashboardRoutes(app: FastifyInstance, opts: Opts): Promise
       "NEW",
       "ENRICHED",
       "QUALIFIED",
+      "REDESIGN_FAILED",
       "REJECTED",
       "REDESIGNED",
       "APPROVED_TO_SEND",

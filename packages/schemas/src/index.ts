@@ -7,6 +7,7 @@ export const ProspectStateSchema = z.enum([
   "NEW",
   "ENRICHED",
   "QUALIFIED",
+  "REDESIGN_FAILED",
   "REJECTED",
   "REDESIGNED",
   "APPROVED_TO_SEND",

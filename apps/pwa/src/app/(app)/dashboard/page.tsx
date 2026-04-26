@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { Send, Inbox, Check, Ban, Sparkles, Rocket } from "lucide-react";
+import { Send, Inbox, Check, Ban, Sparkles, Rocket, AlertTriangle } from "lucide-react";
 import { api } from "../../../lib/api";
 import { SkeletonLine } from "../../../components/skeleton";
 
@@ -19,6 +19,13 @@ const FUNNEL_DEFS: Array<{
   states: string[];
 }> = [
   { key: "in_pipe", label: "In pipeline", icon: Sparkles, color: "text-muted", states: ["NEW", "ENRICHED", "QUALIFIED"] },
+  {
+    key: "redesign_failed",
+    label: "Redesign failed",
+    icon: AlertTriangle,
+    color: "text-amber-400",
+    states: ["REDESIGN_FAILED"],
+  },
   { key: "redesigned", label: "Redesigned", icon: Sparkles, color: "text-accent", states: ["REDESIGNED", "APPROVED_TO_SEND"] },
   { key: "sent", label: "Sent", icon: Send, color: "text-blue-400", states: ["SENT", "FOLLOWUP_1", "FOLLOWUP_2"] },
   { key: "awaiting", label: "Awaiting reply", icon: Inbox, color: "text-yellow-400", states: ["AWAITING"] },

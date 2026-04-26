@@ -3,6 +3,7 @@ import { enrichProspect } from "./enrich.js";
 import { qualifyProspect } from "./qualify.js";
 import { redesignProspect } from "./redesign.js";
 import { sendApprovedOutreachForProspect } from "./send.js";
+import { transition } from "./transitions.js";
 import { logger } from "../lib/logger.js";
 
 async function listByState(db: DbClient, state: string, limit = 10): Promise<Prospect[]> {
@@ -79,6 +80,24 @@ export async function runPipelineCycle(db: DbClient): Promise<Record<string, num
       redesigned++;
     } catch (err) {
       logger.error({ err: String(err), prospectId: p.id }, "redesign failed");
+      try {
+        const [fresh] = await db.select().from(prospects).where(eq(prospects.id, p.id));
+        if (fresh?.state === "ENRICHED") {
+          await transition({
+            db,
+            prospectId: p.id,
+            from: "ENRICHED",
+            to: "REDESIGN_FAILED",
+            reason: "redesign_uncaught_exception",
+            triggeredBy: "scheduler",
+            patch: {
+              rejectionReason: `redesign_exception:${String(err).slice(0, 380)}`,
+            },
+          });
+        }
+      } catch (e) {
+        logger.error({ err: String(e), prospectId: p.id }, "could not transition to REDESIGN_FAILED");
+      }
     }
   }
 

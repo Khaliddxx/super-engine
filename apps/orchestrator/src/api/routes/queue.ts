@@ -195,11 +195,26 @@ export async function queueRoutes(app: FastifyInstance, opts: Opts): Promise<voi
     const db = opts.db();
     const [p] = await db.select().from(prospects).where(eq(prospects.id, req.params.prospectId));
     if (!p) return reply.status(404).send({ error: "not_found" });
-    if (p.state !== "ENRICHED") {
+    if (p.state !== "ENRICHED" && p.state !== "REDESIGN_FAILED") {
       return reply.status(400).send({ error: "not_enriched", state: p.state });
     }
     try {
-      await redesignProspect(db, p);
+      if (p.state === "REDESIGN_FAILED") {
+        await transition({
+          db,
+          prospectId: p.id,
+          from: "REDESIGN_FAILED",
+          to: "ENRICHED",
+          reason: "operator_retry_redesign",
+          triggeredBy: "operator",
+          patch: { rejectionReason: null },
+        });
+        const [fresh] = await db.select().from(prospects).where(eq(prospects.id, p.id));
+        if (!fresh) return reply.status(404).send({ error: "not_found" });
+        await redesignProspect(db, fresh);
+      } else {
+        await redesignProspect(db, p);
+      }
     } catch (err) {
       logger.error({ err: String(err), prospectId: p.id }, "manual start-redesign failed");
       return reply.status(502).send({ error: "redesign_failed", detail: String(err) });
