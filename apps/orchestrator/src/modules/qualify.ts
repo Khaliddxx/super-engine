@@ -51,10 +51,17 @@ export async function qualifyProspect(db: DbClient, prospect: Prospect): Promise
     // If the site already has a booking engine, virtual tour, deep sitemap,
     // and a current copyright year, a one-page redesign would be WORSE than
     // what they have. We skip it rather than propose a downgrade.
-    const strength = await analyzeSiteStrength(prospect.website).catch((e) => {
-      logger.warn({ err: String(e), prospectId: prospect.id }, "site_strength analysis failed");
-      return null;
-    });
+    //
+    // BUT: this is a NEW-prospect gate only. If the prospect already has a
+    // working `redesignHtmlUrl`, the operator already triaged + approved this
+    // site once. Don't re-kill them on regenerate paths.
+    const alreadyHasRedesign = Boolean(prospect.redesignHtmlUrl);
+    const strength = alreadyHasRedesign
+      ? null
+      : await analyzeSiteStrength(prospect.website).catch((e) => {
+          logger.warn({ err: String(e), prospectId: prospect.id }, "site_strength analysis failed");
+          return null;
+        });
     if (strength?.strong) {
       logger.info(
         {
@@ -104,10 +111,19 @@ export async function qualifyProspect(db: DbClient, prospect: Prospect): Promise
     // Decision policy (merges spec §6.3 + visual score)
     const pass = parsed.pass && parsed.score <= 4.0 && parsed.score >= 1.0;
 
-    if (!pass) {
+    // Regenerate path: a prospect that's already been approved once should NOT
+    // be re-rejected by the visual gate just because the operator clicked
+    // "retry". The operator owns that decision.
+    if (!pass && !alreadyHasRedesign) {
       throw new RejectProspectError(
         "site_already_good",
         `Visual score ${parsed.score.toFixed(1)} — site does not need redesign`,
+      );
+    }
+    if (!pass && alreadyHasRedesign) {
+      logger.info(
+        { prospectId: prospect.id, score: parsed.score },
+        "vision gate would reject, but prospect already has redesignHtmlUrl — letting through",
       );
     }
 

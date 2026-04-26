@@ -7,6 +7,7 @@ import { useParams, useRouter } from "next/navigation";
 import { ArrowLeft, Check, X, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "../../../../lib/api";
+import { SkeletonLine } from "../../../../components/skeleton";
 
 type DetailRes = {
   triage: any;
@@ -23,6 +24,7 @@ export default function TriageDetailPage() {
   const { data, isLoading } = useQuery({
     queryKey: ["queue", id],
     queryFn: () => api<DetailRes>(`/api/queue/${id}`),
+    placeholderData: (prev) => prev,
   });
 
   const [text, setText] = useState("");
@@ -51,7 +53,32 @@ export default function TriageDetailPage() {
     },
   });
 
-  if (isLoading || !data) return <div className="p-6 text-muted text-sm">Loading…</div>;
+  if (isLoading || !data) {
+    return (
+      <div className="max-w-xl mx-auto px-4 safe-top pb-4">
+        <header className="flex items-center justify-between py-3">
+          <Link href="/queue" className="flex items-center gap-1 text-muted text-sm">
+            <ArrowLeft className="w-4 h-4" /> Back
+          </Link>
+        </header>
+        <div className="space-y-4">
+          <div className="card p-4 space-y-2">
+            <SkeletonLine className="h-5 w-2/3" />
+            <SkeletonLine className="h-3 w-1/3" />
+            <div className="flex gap-2 pt-2">
+              <SkeletonLine className="h-5 w-16" />
+              <SkeletonLine className="h-5 w-20" />
+            </div>
+          </div>
+          <div className="card p-4 space-y-2">
+            <SkeletonLine className="h-3 w-1/4" />
+            <SkeletonLine className="h-12 w-full rounded-xl" />
+            <SkeletonLine className="h-12 w-full rounded-xl" />
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const { triage, prospect, messages } = data;
   const confidence = triage.confidence ? Math.round(Number(triage.confidence) * 100) : null;

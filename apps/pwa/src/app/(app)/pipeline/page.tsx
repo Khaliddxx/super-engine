@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { ChevronRight, Sparkles, AlertCircle, Check, Send, Inbox, Ban } from "lucide-react";
 import { api } from "../../../lib/api";
+import { SkeletonRowList } from "../../../components/skeleton";
 import { useState } from "react";
 
 type Row = {
@@ -40,6 +41,7 @@ export default function PipelinePage() {
     queryKey: ["pipeline", since],
     queryFn: () => api<{ items: Row[] }>(`/api/pipeline?since=${since}`),
     refetchInterval: 15_000,
+    placeholderData: (prev) => prev,
   });
   const [expanded, setExpanded] = useState<Record<string, boolean>>({ redesigned: true, approved: true });
   const items = data?.items ?? [];
@@ -66,7 +68,7 @@ export default function PipelinePage() {
         </div>
       </header>
 
-      {isLoading && <div className="text-muted text-sm py-10 text-center">Loading…</div>}
+      {isLoading && <SkeletonRowList count={6} />}
 
       <div className="space-y-4">
         {GROUPS.map((g) => {

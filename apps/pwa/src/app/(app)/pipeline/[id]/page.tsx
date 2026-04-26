@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "../../../../lib/api";
+import { SkeletonLine } from "../../../../components/skeleton";
 
 type Res = {
   prospect: any;
@@ -26,6 +27,7 @@ export default function PipelineDetailPage() {
     queryKey: ["pipeline", id],
     queryFn: () => api<Res>(`/api/pipeline/${id}`),
     refetchInterval: 15_000,
+    placeholderData: (prev) => prev,
   });
 
   const [inviteText, setInviteText] = useState("");
@@ -92,7 +94,33 @@ export default function PipelineDetailPage() {
     onError: (e: any) => toast.error(e.message ?? "Retry failed"),
   });
 
-  if (isLoading || !data) return <div className="p-6 text-muted text-sm">Loading…</div>;
+  if (isLoading || !data) {
+    return (
+      <div className="max-w-xl mx-auto px-4 safe-top pb-4">
+        <header className="flex items-center justify-between py-3">
+          <Link href="/pipeline" className="flex items-center gap-1 text-muted text-sm">
+            <ArrowLeft className="w-4 h-4" /> Pipeline
+          </Link>
+        </header>
+        <div className="space-y-4">
+          <div className="card p-4 space-y-2">
+            <SkeletonLine className="h-5 w-1/3" />
+            <SkeletonLine className="h-7 w-2/3" />
+            <SkeletonLine className="h-3 w-1/2" />
+          </div>
+          <div className="card p-4 space-y-2">
+            <SkeletonLine className="h-4 w-1/3" />
+            <SkeletonLine className="aspect-[4/3] rounded-xl" />
+          </div>
+          <div className="card p-4 space-y-2">
+            <SkeletonLine className="h-4 w-1/4" />
+            <SkeletonLine className="h-3 w-full" />
+            <SkeletonLine className="h-3 w-3/4" />
+          </div>
+        </div>
+      </div>
+    );
+  }
   const p = data.prospect;
   const isReviewable = p.state === "REDESIGNED" || p.state === "APPROVED_TO_SEND";
   const isRejected = p.state === "REJECTED";

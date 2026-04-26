@@ -63,6 +63,28 @@ body {
   .tabbar-btn.active svg {
     @apply text-accent;
   }
+  .skeleton {
+    @apply bg-surface2 rounded-lg overflow-hidden relative;
+  }
+  .skeleton::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(255, 255, 255, 0.04) 50%,
+      transparent 100%
+    );
+    animation: shimmer 1.4s ease-in-out infinite;
+  }
+}
+
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
 }
 
 /* Phone safe areas */

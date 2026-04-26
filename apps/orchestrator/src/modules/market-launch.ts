@@ -121,3 +121,42 @@ export async function pickAndLaunch(
 
   return { campaign, pick, summary };
 }
+
+/**
+ * Launch a campaign for an arbitrary niche × city pair the operator chose
+ * directly, without going through the ranked scout. Useful when the operator
+ * spots a market the scout hasn't covered yet, or wants to bias the search
+ * toward something specific.
+ */
+export async function pickAndLaunchCustom(
+  db: DbClient,
+  opts: { niche: string; city: string; country: string; maxProspects?: number },
+): Promise<{ campaign: Campaign; summary: ScrapeSummary }> {
+  const niche = opts.niche.trim().toLowerCase();
+  const city = opts.city.trim();
+  const country = opts.country.toUpperCase().slice(0, 2);
+  const maxProspects = Math.max(1, Math.min(opts.maxProspects ?? 10, 20));
+
+  if (!niche || !city) throw new Error("niche and city required");
+
+  const name = `${city} ${niche}s`;
+  const [campaign] = await db
+    .insert(campaigns)
+    .values({
+      name,
+      niche,
+      targetCity: city,
+      targetCountry: country,
+      maxProspects,
+      outreachChannel: "linkedin",
+      imageryStrategy: "none",
+      autoSendEnabled: false,
+    })
+    .returning();
+  if (!campaign) throw new Error("Failed to create campaign");
+
+  logger.info({ campaignId: campaign.id, niche, city, country }, "pickAndLaunchCustom: campaign created");
+
+  const summary = await scrapeProspectsForCampaign(db, campaign.id, { maxResults: maxProspects });
+  return { campaign, summary };
+}

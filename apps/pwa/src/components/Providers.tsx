@@ -10,7 +10,17 @@ export function Providers({ children }: { children: ReactNode }) {
     () =>
       new QueryClient({
         defaultOptions: {
-          queries: { staleTime: 10_000, refetchOnWindowFocus: false, retry: 1 },
+          queries: {
+            // Keep cached data fresh-feeling while still refetching in the background.
+            staleTime: 10_000,
+            // Stale data stays in the cache for a long time so back-nav is instant.
+            gcTime: 5 * 60_000,
+            refetchOnWindowFocus: false,
+            // The PWA loses tabs to backgrounding all the time; refetching on
+            // reconnect keeps things in sync without the user pulling-to-refresh.
+            refetchOnReconnect: true,
+            retry: 1,
+          },
         },
       }),
   );

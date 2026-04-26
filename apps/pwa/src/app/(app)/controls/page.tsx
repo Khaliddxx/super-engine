@@ -37,16 +37,19 @@ export default function ControlsPage() {
   const campaignsQ = useQuery({
     queryKey: ["campaigns"],
     queryFn: () => api<{ items: Campaign[] }>("/api/campaigns"),
+    placeholderData: (prev) => prev,
   });
 
   const settingsQ = useQuery({
     queryKey: ["settings"],
     queryFn: () => api<Settings>("/api/settings"),
+    placeholderData: (prev) => prev,
   });
 
   const promptsQ = useQuery({
     queryKey: ["prompts"],
     queryFn: () => api<{ items: Array<{ id: string; version: string; preview: string }> }>("/api/prompts"),
+    placeholderData: (prev) => prev,
   });
 
   const diagQ = useQuery({
@@ -87,7 +90,10 @@ export default function ControlsPage() {
   const scan = useMutation({
     mutationFn: (id: string) => api(`/api/campaigns/${id}/scan`, { method: "POST", body: {} }),
     onSuccess: (d: any) => {
-      toast.success(`Scanned: +${d.summary?.inserted ?? 0} new, ${d.summary?.skippedDuplicateDomain ?? 0} dupes`);
+      const s = d.summary ?? {};
+      const polished = (s.skippedSiteAlreadyStrong ?? 0) + (s.skippedTooPolished ?? 0);
+      const polishedNote = polished > 0 ? ` · skipped ${polished} polished` : "";
+      toast.success(`Scanned: +${s.inserted ?? 0} new${polishedNote} · ${s.skippedDuplicateDomain ?? 0} dupes`);
     },
     onError: (e: any) => toast.error(e.message ?? "Scan failed"),
   });

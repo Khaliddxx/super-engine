@@ -219,7 +219,7 @@ Existing booking engine URL (if any): ${i.business_contact.bookingUrl ?? "(none)
 42. Layout variety — DO NOT default to a three-equal-cards grid. Vary: asymmetric splits, image-left-copy-right, full-bleed photo bands, editorial pull-quotes.
 
 ## Size
-43. Minimum combined length across all pages: 12000 characters. Each page ≥ 3500 characters.
+43. Each page ≥ 2200 characters and ≤ 5500 characters. Total combined output (across all pages, JSON included) MUST stay under 16000 characters or it will be truncated. Be tight — quality over volume.
 
 </hard_requirements>
 

@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "../../../lib/api";
+import { SkeletonLine } from "../../../components/skeleton";
 
 type TriageItem = {
   type: "triage";
@@ -76,34 +77,56 @@ export default function QueuePage() {
     queryKey: ["queue"],
     queryFn: () => api<{ items: QueueItem[] }>("/api/queue"),
     refetchInterval: 30_000,
+    placeholderData: (prev) => prev,
   });
+
+  // Optimistic helper: instantly remove an item from the list, snapshot for rollback.
+  function optimisticallyRemove(matcher: (i: QueueItem) => boolean) {
+    qc.cancelQueries({ queryKey: ["queue"] });
+    const prev = qc.getQueryData<{ items: QueueItem[] }>(["queue"]);
+    if (prev) {
+      qc.setQueryData<{ items: QueueItem[] }>(["queue"], {
+        items: prev.items.filter((i) => !matcher(i)),
+      });
+    }
+    return prev;
+  }
 
   const approveTriage = useMutation({
     mutationFn: ({ id, text }: { id: string; text?: string }) =>
       api(`/api/queue/${id}/approve`, { method: "POST", body: { text } }),
-    onSuccess: () => {
-      toast.success("Sent");
-      qc.invalidateQueries({ queryKey: ["queue"] });
+    onMutate: ({ id }) => ({ previous: optimisticallyRemove((i) => i.type === "triage" && i.id === id) }),
+    onSuccess: () => toast.success("Sent"),
+    onError: (e: any, _vars, ctx: any) => {
+      if (ctx?.previous) qc.setQueryData(["queue"], ctx.previous);
+      toast.error(e.message ?? "Send failed");
     },
-    onError: (e: any) => toast.error(e.message ?? "Send failed"),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["queue"] }),
   });
 
   const rejectTriage = useMutation({
     mutationFn: (id: string) => api(`/api/queue/${id}/reject`, { method: "POST", body: {} }),
-    onSuccess: () => {
-      toast.success("Dismissed");
-      qc.invalidateQueries({ queryKey: ["queue"] });
+    onMutate: (id) => ({ previous: optimisticallyRemove((i) => i.type === "triage" && i.id === id) }),
+    onSuccess: () => toast.success("Dismissed"),
+    onError: (e: any, _vars, ctx: any) => {
+      if (ctx?.previous) qc.setQueryData(["queue"], ctx.previous);
+      toast.error(e.message ?? "Dismiss failed");
     },
+    onSettled: () => qc.invalidateQueries({ queryKey: ["queue"] }),
   });
 
   const approveReview = useMutation({
     mutationFn: (prospectId: string) =>
       api(`/api/queue/review/${prospectId}/approve`, { method: "POST", body: {} }),
-    onSuccess: () => {
-      toast.success("Redesign approved — ready to send");
-      qc.invalidateQueries({ queryKey: ["queue"] });
+    onMutate: (prospectId) => ({
+      previous: optimisticallyRemove((i) => i.type === "review_redesign" && i.prospectId === prospectId),
+    }),
+    onSuccess: () => toast.success("Redesign approved — ready to send"),
+    onError: (e: any, _vars, ctx: any) => {
+      if (ctx?.previous) qc.setQueryData(["queue"], ctx.previous);
+      toast.error(e.message ?? "Approve failed");
     },
-    onError: (e: any) => toast.error(e.message ?? "Approve failed"),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["queue"] }),
   });
 
   const rejectReview = useMutation({
@@ -112,10 +135,15 @@ export default function QueuePage() {
         method: "POST",
         body: { reason: "operator_review_rejected" },
       }),
-    onSuccess: () => {
-      toast.success("Redesign rejected");
-      qc.invalidateQueries({ queryKey: ["queue"] });
+    onMutate: (prospectId) => ({
+      previous: optimisticallyRemove((i) => i.type === "review_redesign" && i.prospectId === prospectId),
+    }),
+    onSuccess: () => toast.success("Redesign rejected"),
+    onError: (e: any, _vars, ctx: any) => {
+      if (ctx?.previous) qc.setQueryData(["queue"], ctx.previous);
+      toast.error(e.message ?? "Reject failed");
     },
+    onSettled: () => qc.invalidateQueries({ queryKey: ["queue"] }),
   });
 
   const regenerateReview = useMutation({
@@ -160,7 +188,26 @@ export default function QueuePage() {
         </button>
       </header>
 
-      {isLoading && <div className="text-muted text-sm py-10 text-center">Loading…</div>}
+      {isLoading && (
+        <div className="space-y-3 pt-1">
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="card p-4 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <SkeletonLine className="h-5 w-24" />
+                <SkeletonLine className="h-7 w-14 rounded-xl" />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <SkeletonLine className="aspect-[4/3] rounded-xl" />
+                <SkeletonLine className="aspect-[4/3] rounded-xl" />
+              </div>
+              <div className="flex gap-2">
+                <SkeletonLine className="h-9 flex-1 rounded-xl" />
+                <SkeletonLine className="h-9 flex-1 rounded-xl" />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {!isLoading && pending.length === 0 && (
         <div className="card p-8 text-center space-y-4">

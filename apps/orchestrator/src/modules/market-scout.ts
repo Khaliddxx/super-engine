@@ -3,25 +3,72 @@ import { textSearch } from "../integrations/places.js";
 import { logger } from "../lib/logger.js";
 import crypto from "node:crypto";
 
-const NICHE_TICKET_WEIGHTS: Record<string, number> = {
+/**
+ * Niche → average deal value weight (higher = pricier redesigns these owners
+ * can pay for). Adding new niches is a one-line change.
+ */
+export const NICHE_TICKET_WEIGHTS: Record<string, number> = {
+  // High-ticket
   "wedding venue": 2.0,
+  "boutique hotel": 2.0,
   "hotel": 2.0,
+  "luxury resort": 2.0,
+  "private clinic": 1.8,
+  "cosmetic surgeon": 1.8,
+  "fertility clinic": 1.8,
+  "ivf clinic": 1.8,
+  "orthodontist": 1.6,
   "dentist": 1.5,
+  "dermatologist": 1.5,
   "med spa": 1.5,
   "law firm": 1.5,
+  "real estate agency": 1.4,
+  "architect": 1.4,
+  "interior designer": 1.4,
+  "boutique winery": 1.3,
+  // Mid-ticket
   "plumber": 1.2,
   "hvac": 1.2,
   "electrician": 1.2,
+  "roofing contractor": 1.2,
+  "landscaper": 1.1,
+  "veterinarian": 1.1,
+  "physiotherapist": 1.1,
+  "chiropractor": 1.1,
+  "optometrist": 1.1,
+  "yoga studio": 1.0,
+  "pilates studio": 1.0,
+  "personal trainer": 1.0,
+  "massage clinic": 1.0,
+  "music school": 1.0,
+  "dance studio": 1.0,
+  "tattoo studio": 1.0,
+  // Lower-ticket but high-volume
+  "fine dining restaurant": 1.1,
   "restaurant": 0.8,
   "cafe": 0.8,
+  "bakery": 0.8,
+  "wine bar": 0.9,
+  "brewery": 0.9,
+  "bar": 0.8,
+  "ice cream shop": 0.7,
   "nail salon": 0.7,
   "hair salon": 0.7,
   "barber shop": 0.7,
-  "yoga studio": 1.0,
-  "personal trainer": 1.0,
+  "florist": 0.7,
+  "photographer": 1.0,
+  "videographer": 1.0,
+  "florists": 0.7,
+  "pet groomer": 0.7,
+  "tutoring center": 0.9,
 };
 
-const CITY_SETS: Record<string, string[]> = {
+/**
+ * Country → cities to scan. Adding a country is a one-line change. We keep
+ * cities to "places where local businesses actually exist" (skip megacities
+ * dominated by chains where possible).
+ */
+export const CITY_SETS: Record<string, string[]> = {
   AU: [
     "Sydney",
     "Melbourne",
@@ -33,16 +80,70 @@ const CITY_SETS: Record<string, string[]> = {
     "Canberra",
     "Hobart",
     "Geelong",
+    "Wollongong",
+    "Sunshine Coast",
+    "Cairns",
+    "Darwin",
+    "Townsville",
   ],
-  US: ["Austin", "Denver", "Portland", "Nashville", "Raleigh", "Charlotte"],
-  UK: ["Bristol", "Manchester", "Leeds", "Edinburgh", "Cardiff"],
-  NL: ["Amsterdam", "Rotterdam", "Utrecht", "The Hague", "Eindhoven"],
+  US: [
+    "Austin",
+    "Denver",
+    "Portland",
+    "Nashville",
+    "Raleigh",
+    "Charlotte",
+    "Boulder",
+    "Asheville",
+    "Charleston",
+    "Savannah",
+    "Boise",
+    "Salt Lake City",
+    "Bozeman",
+    "Ann Arbor",
+    "Madison",
+    "Burlington",
+    "Sarasota",
+    "Sedona",
+    "Santa Barbara",
+    "Carmel",
+  ],
+  UK: [
+    "Bristol",
+    "Manchester",
+    "Leeds",
+    "Edinburgh",
+    "Cardiff",
+    "Brighton",
+    "Bath",
+    "York",
+    "Cambridge",
+    "Oxford",
+    "Glasgow",
+    "Liverpool",
+    "Newcastle upon Tyne",
+    "Norwich",
+    "Belfast",
+  ],
+  NL: ["Amsterdam", "Rotterdam", "Utrecht", "The Hague", "Eindhoven", "Haarlem", "Groningen", "Maastricht", "Leiden", "Delft"],
+  CA: ["Toronto", "Vancouver", "Montreal", "Calgary", "Ottawa", "Halifax", "Victoria", "Quebec City", "Edmonton", "Kelowna"],
+  IE: ["Dublin", "Cork", "Galway", "Limerick", "Kilkenny"],
+  NZ: ["Auckland", "Wellington", "Christchurch", "Queenstown", "Tauranga"],
+  DE: ["Berlin", "Munich", "Hamburg", "Cologne", "Frankfurt", "Düsseldorf", "Leipzig", "Stuttgart"],
+  FR: ["Paris", "Lyon", "Marseille", "Bordeaux", "Toulouse", "Nice", "Nantes", "Lille"],
+  ES: ["Madrid", "Barcelona", "Valencia", "Seville", "Bilbao", "Málaga"],
+  IT: ["Rome", "Milan", "Florence", "Bologna", "Naples", "Turin"],
+  PT: ["Lisbon", "Porto", "Faro", "Braga"],
+  AE: ["Dubai", "Abu Dhabi"],
 };
+
+export const SUPPORTED_COUNTRIES = Object.keys(CITY_SETS);
 
 export interface ScoutOptions {
   country: string;
   maxCells?: number;
   niches?: string[];
+  cities?: string[];
 }
 
 export interface ScoutRow {
@@ -59,23 +160,24 @@ export interface ScoutRow {
 export async function runMarketScout(db: DbClient, opts: ScoutOptions): Promise<ScoutRow[]> {
   const scanRunId = crypto.randomUUID();
   const country = opts.country.toUpperCase();
-  const cities = CITY_SETS[country] ?? CITY_SETS.AU!;
+  const cities = opts.cities ?? CITY_SETS[country] ?? CITY_SETS.AU!;
   const niches = opts.niches ?? Object.keys(NICHE_TICKET_WEIGHTS);
-  // Default: scan the full grid (all niches × all cities). This keeps the
-  // top-10 from being dominated by whichever niches happened to be first in
-  // the object-key order.
-  const maxCells = opts.maxCells ?? niches.length * cities.length;
+  // We have a much wider grid now (~50 niches × 15 cities = 750 cells per
+  // country). Don't scan the whole thing on every rescan — that's a lot of
+  // Places quota. Instead cap at 60 cells per run and randomly seed which
+  // (niche, city) pairs we try. Subsequent runs cover different territory,
+  // and the marketScans cache aggregates them over time.
+  const maxCells = Math.min(opts.maxCells ?? 60, niches.length * cities.length);
 
-  // Round-robin interleave niches (niche-0/city-0, niche-1/city-0, ... niche-0/city-1, ...)
-  // so that even if maxCells cuts us short, we get coverage across niches rather
-  // than exhausting the first niche across all cities.
-  const cells: Array<{ niche: string; city: string }> = [];
-  for (let ci = 0; ci < cities.length; ci++) {
-    for (let ni = 0; ni < niches.length; ni++) {
-      cells.push({ niche: niches[ni]!, city: cities[ci]! });
-    }
+  // Build full cartesian product, then shuffle for variety per scan.
+  const allCells: Array<{ niche: string; city: string }> = [];
+  for (const c of cities) for (const n of niches) allCells.push({ niche: n, city: c });
+
+  for (let i = allCells.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [allCells[i], allCells[j]] = [allCells[j]!, allCells[i]!];
   }
-  const trimmed = cells.slice(0, maxCells);
+  const trimmed = allCells.slice(0, maxCells);
 
   const results: ScoutRow[] = [];
   const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);

@@ -5,7 +5,6 @@ import { deployStaticSite, type StaticSiteFile } from "../integrations/vercel.js
 import { env } from "../lib/env.js";
 import { transition } from "./transitions.js";
 import { getOrCreateTemplate } from "./template.js";
-import { RejectProspectError } from "../lib/errors.js";
 import { logger } from "../lib/logger.js";
 
 // ─────────────────────────────────────────────
@@ -31,7 +30,12 @@ interface ClaudePage {
   html: string;
 }
 
+/**
+ * Try to extract one or more pages from Claude's response. Falls through several
+ * recovery layers so a slightly malformed response NEVER causes a hard rejection.
+ */
 function parseClaudeOutput(raw: string): ClaudePage[] | null {
+  // Layer 1 — clean JSON
   const cleaned = cleanGeneratedJson(raw);
   try {
     const parsed = JSON.parse(cleaned);
@@ -39,26 +43,45 @@ function parseClaudeOutput(raw: string): ClaudePage[] | null {
       const pages = (parsed.pages as any[])
         .filter((p) => p && typeof p.slug === "string" && typeof p.html === "string")
         .map((p) => ({ slug: String(p.slug), html: String(p.html) }));
-      return pages.length ? pages : null;
+      if (pages.length) return pages;
     }
-    // Sometimes the model returns an array directly
     if (Array.isArray(parsed)) {
       const pages = parsed
         .filter((p) => p && typeof p.slug === "string" && typeof p.html === "string")
         .map((p) => ({ slug: String(p.slug), html: String(p.html) }));
-      return pages.length ? pages : null;
+      if (pages.length) return pages;
     }
-    return null;
   } catch {
-    // Last-ditch: maybe the model returned a single <!DOCTYPE html> page despite
-    // being asked for JSON. Salvage it as a single-page site so we still ship
-    // SOMETHING the operator can review.
-    const doctypeIdx = raw.search(/<!doctype html>/i);
-    if (doctypeIdx >= 0) {
-      return [{ slug: "index.html", html: raw.slice(doctypeIdx).trim() }];
-    }
-    return null;
+    // fall through
   }
+
+  // Layer 2 — JSON looks like it was truncated mid-string. Pull out every
+  // valid `{ "slug": "...", "html": "<!DOCTYPE..." }` block we can find.
+  const blockPages: ClaudePage[] = [];
+  const blockRe = /"slug"\s*:\s*"([^"]+)"\s*,\s*"html"\s*:\s*"([\s\S]*?)"\s*(?:,\s*"|}\s*[,\]])/g;
+  let m: RegExpExecArray | null;
+  while ((m = blockRe.exec(cleaned)) !== null) {
+    const slug = m[1]!;
+    // Unescape JSON string content
+    const html = m[2]!
+      .replace(/\\n/g, "\n")
+      .replace(/\\t/g, "\t")
+      .replace(/\\"/g, '"')
+      .replace(/\\\\/g, "\\")
+      .replace(/\\u003c/gi, "<")
+      .replace(/\\u003e/gi, ">");
+    if (/<!doctype html>/i.test(html)) blockPages.push({ slug, html });
+  }
+  if (blockPages.length) return blockPages;
+
+  // Layer 3 — model returned raw HTML despite being asked for JSON.
+  const doctypeIdx = raw.search(/<!doctype html>/i);
+  if (doctypeIdx >= 0) {
+    const html = raw.slice(doctypeIdx).trim();
+    return [{ slug: "index.html", html }];
+  }
+
+  return null;
 }
 
 function hostOf(url: string | null | undefined): string | null {
@@ -248,56 +271,98 @@ interface DbSitemapEntry {
   sourceUrl: string;
 }
 
+/**
+ * Pick the sitemap to generate.
+ *
+ * IMPORTANT: we cap at 3 pages by default. With Claude returning JSON, more
+ * than 3 pages × ~3500 chars hits the token cap and produces truncated JSON
+ * that we can't recover from cleanly. 3 pages is the sweet spot: enough to
+ * feel like a real site (home + about/menu/services + contact), small enough
+ * that Claude can finish.
+ */
+const MAX_PAGES = 3;
+
 function selectSitemap(prospect: Prospect): RedesignSitemapEntry[] {
   const stored = (prospect.scrapedSitemap as DbSitemapEntry[] | null) ?? [];
-  if (stored.length >= 2) {
-    // Ensure index.html leads
-    const home = stored.find((s) => s.slug === "index.html") ?? {
-      slug: "index.html",
-      type: "home",
-      title: prospect.businessName,
-      snippet: "",
-      sourceUrl: prospect.website ?? "",
-    };
-    const rest = stored.filter((s) => s.slug !== "index.html").slice(0, 4);
-    // Guarantee a contact page
-    const hasContact = rest.some((s) => s.slug === "contact.html");
-    if (!hasContact) {
-      rest.push({
-        slug: "contact.html",
-        type: "contact",
-        title: "Contact",
-        snippet: "",
-        sourceUrl: prospect.website ?? "",
-      });
-    }
-    return [home, ...rest].slice(0, 5);
-  }
 
-  // Synthetic fallback — give Claude a simple 3-page spine.
-  return [
-    {
-      slug: "index.html",
-      type: "home",
-      title: prospect.businessName,
-      snippet: prospect.scrapedCopy ?? "",
-      sourceUrl: prospect.website ?? "",
-    },
-    {
+  const home: RedesignSitemapEntry = stored.find((s) => s.slug === "index.html") ?? {
+    slug: "index.html",
+    type: "home",
+    title: prospect.businessName,
+    snippet: prospect.scrapedCopy ?? "",
+    sourceUrl: prospect.website ?? "",
+  };
+  const contact: RedesignSitemapEntry = stored.find((s) => s.slug === "contact.html") ?? {
+    slug: "contact.html",
+    type: "contact",
+    title: "Contact",
+    snippet: prospect.phone ?? prospect.email ?? "",
+    sourceUrl: prospect.website ?? "",
+  };
+
+  // Pick the most informative middle page from the stored sitemap.
+  const middlePriority: string[] = ["menu.html", "rooms.html", "services.html", "about.html", "gallery.html", "team.html"];
+  const middle =
+    middlePriority
+      .map((slug) => stored.find((s) => s.slug === slug))
+      .find((entry): entry is DbSitemapEntry => Boolean(entry)) ??
+    ({
       slug: "about.html",
       type: "about",
       title: "About",
       snippet: prospect.scrapedAboutCopy ?? "",
       sourceUrl: prospect.website ?? "",
-    },
-    {
-      slug: "contact.html",
-      type: "contact",
-      title: "Contact",
-      snippet: prospect.phone ?? prospect.email ?? "",
-      sourceUrl: prospect.website ?? "",
-    },
-  ];
+    } satisfies RedesignSitemapEntry);
+
+  return [home, middle, contact].slice(0, MAX_PAGES);
+}
+
+// ─────────────────────────────────────────────
+//  Soft-failure handling
+// ─────────────────────────────────────────────
+
+/**
+ * Centralized failure handler for the redesign step.
+ *
+ * Hard rule: if the prospect ALREADY has a working `redesignHtmlUrl`, we never
+ * push them back to REJECTED. The original preview is still live; the operator
+ * shouldn't lose data because a regen attempt produced bad HTML. We bring them
+ * back to REDESIGNED instead and log the failure for inspection.
+ *
+ * Only when there is no prior preview do we transition to REJECTED, and even
+ * then we use a clear `redesign_generation_failed` reason.
+ */
+async function handleRedesignFailure(db: DbClient, prospect: Prospect, reason: string): Promise<void> {
+  const hasPreviousPreview = Boolean(prospect.redesignHtmlUrl);
+
+  if (hasPreviousPreview) {
+    logger.warn(
+      { prospectId: prospect.id, reason, keepingUrl: prospect.redesignHtmlUrl },
+      "redesign regen failed; restoring REDESIGNED state with previous preview",
+    );
+    await transition({
+      db,
+      prospectId: prospect.id,
+      from: prospect.state as any,
+      to: "REDESIGNED",
+      reason: `regen_failed_kept_previous:${reason}`,
+      patch: {
+        // explicit: keep redesignHtmlUrl + redesignDeployedAt as-is
+        rejectionReason: null,
+      },
+    });
+    return;
+  }
+
+  logger.error({ prospectId: prospect.id, reason }, "redesign generation failed (no previous preview)");
+  await transition({
+    db,
+    prospectId: prospect.id,
+    from: prospect.state as any,
+    to: "REJECTED",
+    reason: "redesign_generation_failed",
+    patch: { rejectionReason: `redesign_generation_failed:${reason}` },
+  });
 }
 
 // ─────────────────────────────────────────────
@@ -366,15 +431,8 @@ export async function redesignProspect(db: DbClient, prospect: Prospect): Promis
   }
 
   if (!pages || pages.length === 0) {
-    await transition({
-      db,
-      prospectId: prospect.id,
-      from: prospect.state as any,
-      to: "REJECTED",
-      reason: "html_validation_failed",
-      patch: { rejectionReason: `redesign_parse_failed:${lastFailure ?? "unknown"}` },
-    });
-    throw new RejectProspectError("html_validation_failed", lastFailure ?? "unknown");
+    await handleRedesignFailure(db, prospect, `parse_failed:${lastFailure ?? "unknown"}`);
+    return;
   }
 
   // ─────────────────────────────────────────────
@@ -424,18 +482,10 @@ export async function redesignProspect(db: DbClient, prospect: Prospect): Promis
     validatedSlugs.push(slug);
   }
 
-  // We REQUIRE at least index.html to ship anything.
   const hasIndex = files.some((f) => f.file === "index.html");
   if (!hasIndex) {
-    await transition({
-      db,
-      prospectId: prospect.id,
-      from: prospect.state as any,
-      to: "REJECTED",
-      reason: "html_validation_failed",
-      patch: { rejectionReason: "no_valid_index_page" },
-    });
-    throw new RejectProspectError("html_validation_failed", "no_valid_index_page");
+    await handleRedesignFailure(db, prospect, "no_valid_index_page");
+    return;
   }
 
   // ─────────────────────────────────────────────
