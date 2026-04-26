@@ -82,6 +82,7 @@ export async function draftInitialEmail(prospect: Prospect): Promise<{ subject: 
       city: prospect.city ?? "",
       top_issues: prospect.qualificationIssues ?? [],
       redesign_url: prospect.redesignHtmlUrl ?? "",
+      website_url: prospect.website ?? "",
       operator_first_name: firstName(cfg.OPERATOR_NAME),
     }),
     { maxTokens: 900, temperature: 0.75 },
@@ -229,7 +230,8 @@ export async function sendEmailInitialForProspect(
     });
     return { sent: false, reason: "missing_email" };
   }
-  if (!prospect.redesignHtmlUrl) return { sent: false, reason: "missing_redesign" };
+  const linkForCampaign = prospect.redesignHtmlUrl ?? prospect.website;
+  if (!linkForCampaign) return { sent: false, reason: "missing_redesign" };
   if (!cfg.INSTANTLY_CAMPAIGN_ID) {
     await db.insert(sendLog).values({
       prospectId: prospect.id,
@@ -275,7 +277,7 @@ export async function sendEmailInitialForProspect(
     phone: prospect.phone,
     subject: draft.subject,
     body: draft.body,
-    redesignUrl: prospect.redesignHtmlUrl,
+    redesignUrl: linkForCampaign,
     topIssue: prospect.qualificationIssues?.[0] ?? null,
   });
 
@@ -331,7 +333,7 @@ export async function sendApprovedOutreachForProspect(
   opts: { approvedMessage?: string; approvedEmailSubject?: string; approvedEmailBody?: string } = {},
 ): Promise<SendGateResult> {
   const [campaign] = await db.select().from(campaigns).where(eq(campaigns.id, prospect.campaignId));
-  const channel = campaign?.outreachChannel ?? "linkedin";
+  const channel = campaign?.outreachChannel ?? "both";
   const wantsEmail = channel === "email" || channel === "both";
   const wantsLinkedIn = channel === "linkedin" || channel === "both";
   const channels: Record<string, SendGateResult> = {};

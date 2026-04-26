@@ -13,7 +13,9 @@
 
 import { logger } from "../lib/logger.js";
 
-const UA = "SuperEngineBot/1.0 (+https://super-engine.dev)";
+/** Browser-like UA — many dental / SMB sites return 403 to non-browser bots. */
+const BROWSER_UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
 export interface SiteStrengthSignals {
   sitemapPageCount: number;
@@ -80,7 +82,11 @@ const NOISE_PATH = /\/(?:privacy|terms|cookie|legal|disclaimer|sitemap|category|
 async function fetchText(url: string, timeoutMs = 8000): Promise<{ ok: boolean; text: string; status: number }> {
   try {
     const res = await fetch(url, {
-      headers: { "User-Agent": UA, Accept: "text/html,application/xhtml+xml,application/xml" },
+      headers: {
+        "User-Agent": BROWSER_UA,
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
       redirect: "follow",
       signal: AbortSignal.timeout(timeoutMs),
     });
@@ -89,6 +95,46 @@ async function fetchText(url: string, timeoutMs = 8000): Promise<{ ok: boolean; 
   } catch {
     return { ok: false, text: "", status: 0 };
   }
+}
+
+/** Try full Places/GMB URL first, then origin root, then same path on alternate scheme. */
+async function fetchHomepageHtml(website: string): Promise<{ ok: boolean; text: string; status: number; triedUrl: string }> {
+  let canonical: URL;
+  try {
+    canonical = new URL(website.startsWith("http") ? website : `https://${website}`);
+  } catch {
+    return { ok: false, text: "", status: 0, triedUrl: website };
+  }
+  canonical.hash = "";
+  const pathAndQuery = `${canonical.pathname || "/"}${canonical.search}`;
+  const otherSchemeUrl =
+    canonical.protocol === "https:"
+      ? `http://${canonical.host}${pathAndQuery}`
+      : `https://${canonical.host}${pathAndQuery}`;
+
+  const candidates = [canonical.href, `${canonical.origin}/`, otherSchemeUrl].filter(
+    (u, i, a) => a.indexOf(u) === i,
+  );
+
+  const seen = new Set<string>();
+  let last: { ok: boolean; text: string; status: number; triedUrl: string } = {
+    ok: false,
+    text: "",
+    status: 0,
+    triedUrl: canonical.href,
+  };
+
+  for (const u of candidates) {
+    if (seen.has(u)) continue;
+    seen.add(u);
+    const r = await fetchText(u, 8000);
+    last = { ...r, triedUrl: u };
+    if (r.ok && r.text && r.text.length > 200) {
+      return last;
+    }
+  }
+
+  return last;
 }
 
 async function fetchSitemapPages(origin: string): Promise<string[]> {
@@ -183,14 +229,16 @@ export async function analyzeSiteStrength(website: string): Promise<SiteStrength
 
   const origin = url.origin;
 
-  // Fetch homepage + sitemap in parallel
   const [homepageRes, sitemapUrls] = await Promise.all([
-    fetchText(origin + "/", 8000),
+    fetchHomepageHtml(website),
     fetchSitemapPages(origin),
   ]);
 
-  if (!homepageRes.ok || !homepageRes.text) {
-    logger.info({ website, status: homepageRes.status }, "site_strength: homepage fetch failed");
+  if (!homepageRes.ok || !homepageRes.text || homepageRes.text.length < 200) {
+    logger.info(
+      { website, status: homepageRes.status, triedUrl: homepageRes.triedUrl },
+      "site_strength: homepage fetch failed",
+    );
     return makeEmpty(false);
   }
 

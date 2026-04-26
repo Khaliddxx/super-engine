@@ -156,75 +156,171 @@ interface StudioOverlayArgs {
   tagline: string;
   bookingUrl: string;
   businessName: string;
+  /** When `bookingUrl` is empty, used for the CTA so the button is not dead. */
+  fallbackMailto?: string;
+}
+
+/** Prevent tagline/display name from breaking overlay DOM or XSS. */
+function escapeStudioHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 function buildStudioOverlay(a: StudioOverlayArgs): string {
-  const hasBooking = Boolean(a.bookingUrl);
-  const ctaAttrs = hasBooking
-    ? `href="${a.bookingUrl}" target="_blank" rel="noopener"`
-    : `href="#" onclick="return false"`;
+  const displayName = escapeStudioHtml(a.displayName ?? "");
+  const tagline = escapeStudioHtml(a.tagline ?? "");
+  const booking = (a.bookingUrl ?? "").trim();
+  const mail = (a.fallbackMailto ?? "").trim();
+  const hasBooking = Boolean(booking);
+  const hasMail = Boolean(mail);
+  const ctaHref = hasBooking
+    ? booking.replace(/"/g, "&quot;")
+    : hasMail
+      ? mail.replace(/"/g, "&quot;")
+      : "";
+  const ctaInner = `Book a 15-min call
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>`;
+  const ctaBlock = hasBooking
+    ? `<a class="se-studio-cta" href="${ctaHref}" target="_blank" rel="noopener">
+      ${ctaInner}
+    </a>`
+    : hasMail
+      ? `<a class="se-studio-cta" href="${ctaHref}">
+      ${ctaInner}
+    </a>`
+      : `<span class="se-studio-cta se-studio-cta--inactive" title="Set STUDIO_BOOKING_URL or OPERATOR_EMAIL in the studio environment">
+      ${ctaInner}
+    </span>`;
+  const secondaryLink =
+    hasBooking || hasMail
+      ? `<a class="se-studio-booking-link" href="${ctaHref}" ${hasBooking ? 'target="_blank" rel="noopener"' : ""}>Schedule a call →</a>`
+      : "";
   return `
 <!-- studio overlay (injected by Super Engine, not part of the business's content) -->
 <div id="__se-studio-banner" role="complementary" aria-label="Message from the designer">
-  <div class="__se-card">
-    <div class="__se-body">
-      <div class="__se-eyebrow">${a.displayName}</div>
-      <div class="__se-copy">${a.tagline}</div>
+  <div class="se-studio-banner-card">
+    <div class="se-studio-banner-body">
+      <div class="se-studio-banner-eyebrow">${displayName}</div>
+      <div class="se-studio-banner-copy">${tagline}</div>
+      ${secondaryLink}
     </div>
-    <a class="__se-cta" ${ctaAttrs}>
-      Book a 15-min call
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
-    </a>
-    <button class="__se-close" aria-label="Dismiss" onclick="document.getElementById('__se-studio-banner').remove()">
+    ${ctaBlock}
+    <button type="button" class="se-studio-close" aria-label="Dismiss" onclick="document.getElementById('__se-studio-banner').remove()">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
     </button>
   </div>
 </div>
 <style>
   #__se-studio-banner {
-    position: fixed; bottom: 16px; left: 16px; right: 16px; z-index: 2147483647;
-    font-family: ui-sans-serif, system-ui, -apple-system, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
-    pointer-events: none;
+    position: fixed !important;
+    bottom: 16px !important;
+    left: 16px !important;
+    right: 16px !important;
+    z-index: 2147483647 !important;
+    font-family: ui-sans-serif, system-ui, -apple-system, "SF Pro Text", "Segoe UI", Roboto, sans-serif !important;
+    pointer-events: none !important;
+    display: block !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: none !important;
+    background: transparent !important;
   }
-  #__se-studio-banner .__se-card {
-    pointer-events: auto;
-    display: flex; align-items: center; gap: 10px;
-    max-width: 620px; margin: 0 auto;
-    padding: 10px 10px 10px 14px;
-    background: #0b0d12; color: #e7ebf0;
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 14px;
-    box-shadow: 0 14px 40px rgba(0,0,0,0.28);
-    backdrop-filter: saturate(120%) blur(8px);
-    -webkit-backdrop-filter: saturate(120%) blur(8px);
+  #__se-studio-banner * { box-sizing: border-box !important; }
+  #__se-studio-banner .se-studio-banner-card {
+    pointer-events: auto !important;
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: center !important;
+    gap: 10px !important;
+    max-width: 620px !important;
+    margin: 0 auto !important;
+    padding: 10px 10px 10px 14px !important;
+    background: #0b0d12 !important;
+    color: #e7ebf0 !important;
+    border: 1px solid rgba(255,255,255,0.08) !important;
+    border-radius: 14px !important;
+    box-shadow: 0 14px 40px rgba(0,0,0,0.28) !important;
+    backdrop-filter: saturate(120%) blur(8px) !important;
+    -webkit-backdrop-filter: saturate(120%) blur(8px) !important;
   }
-  #__se-studio-banner .__se-body { flex: 1; min-width: 0; }
-  #__se-studio-banner .__se-eyebrow {
-    font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
-    color: #8892a6; margin-bottom: 2px;
+  #__se-studio-banner .se-studio-banner-body {
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
+    display: block !important;
   }
-  #__se-studio-banner .__se-copy {
-    font-size: 13px; line-height: 1.35; color: #e7ebf0;
-    overflow: hidden; text-overflow: ellipsis;
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  #__se-studio-banner .se-studio-banner-eyebrow {
+    display: block !important;
+    font-size: 11px !important;
+    letter-spacing: 0.08em !important;
+    text-transform: uppercase !important;
+    color: #8892a6 !important;
+    margin: 0 0 2px 0 !important;
+    line-height: 1.3 !important;
   }
-  #__se-studio-banner .__se-cta {
-    display: inline-flex; align-items: center; gap: 6px;
-    flex-shrink: 0; padding: 10px 14px; min-height: 40px;
-    background: #ffffff; color: #0b0d12;
-    border-radius: 10px; font-weight: 600; font-size: 13px; letter-spacing: -0.01em;
-    text-decoration: none; white-space: nowrap;
+  #__se-studio-banner .se-studio-banner-copy {
+    display: block !important;
+    font-size: 13px !important;
+    line-height: 1.35 !important;
+    color: #e7ebf0 !important;
+    margin: 0 !important;
   }
-  #__se-studio-banner .__se-cta:hover { background: #f1f3f5; }
-  #__se-studio-banner .__se-close {
-    flex-shrink: 0; width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center;
-    background: transparent; color: #8892a6; border: 0; border-radius: 8px; cursor: pointer;
+  #__se-studio-banner .se-studio-booking-link {
+    display: inline-block !important;
+    margin-top: 6px !important;
+    font-size: 12px !important;
+    font-weight: 600 !important;
+    color: #a8c5ff !important;
+    text-decoration: underline !important;
   }
-  #__se-studio-banner .__se-close:hover { color: #e7ebf0; background: rgba(255,255,255,0.06); }
+  #__se-studio-banner .se-studio-booking-link:hover { color: #ffffff !important; }
+  #__se-studio-banner .se-studio-cta {
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+    flex-shrink: 0 !important;
+    padding: 10px 14px !important;
+    min-height: 40px !important;
+    background: #ffffff !important;
+    color: #0b0d12 !important;
+    border-radius: 10px !important;
+    font-weight: 600 !important;
+    font-size: 13px !important;
+    letter-spacing: -0.01em !important;
+    text-decoration: none !important;
+    white-space: nowrap !important;
+    border: none !important;
+    cursor: pointer !important;
+  }
+  #__se-studio-banner .se-studio-cta:hover { background: #f1f3f5 !important; }
+  #__se-studio-banner .se-studio-cta--inactive {
+    opacity: 0.55 !important;
+    cursor: not-allowed !important;
+    pointer-events: none !important;
+    background: #3d4450 !important;
+    color: #c5ccd6 !important;
+  }
+  #__se-studio-banner .se-studio-close {
+    flex-shrink: 0 !important;
+    width: 32px !important;
+    height: 32px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    background: transparent !important;
+    color: #8892a6 !important;
+    border: 0 !important;
+    border-radius: 8px !important;
+    cursor: pointer !important;
+    padding: 0 !important;
+  }
+  #__se-studio-banner .se-studio-close:hover { color: #e7ebf0 !important; background: rgba(255,255,255,0.06) !important; }
   @media (max-width: 540px) {
-    #__se-studio-banner .__se-card { padding: 10px; gap: 8px; }
-    #__se-studio-banner .__se-copy { font-size: 12px; }
-    #__se-studio-banner .__se-cta { padding: 8px 10px; font-size: 12px; min-height: 36px; }
+    #__se-studio-banner .se-studio-banner-card { padding: 10px !important; gap: 8px !important; flex-wrap: wrap !important; }
+    #__se-studio-banner .se-studio-banner-copy { font-size: 12px !important; }
+    #__se-studio-banner .se-studio-cta { padding: 8px 10px !important; font-size: 12px !important; min-height: 36px !important; }
   }
   body { padding-bottom: 120px; }
 </style>
@@ -466,11 +562,16 @@ export async function redesignProspect(db: DbClient, prospect: Prospect): Promis
   // ─────────────────────────────────────────────
   //  Clean + validate every page, inject overlay
   // ─────────────────────────────────────────────
+  const opEmail = (cfg.OPERATOR_EMAIL ?? "").trim();
   const overlay = buildStudioOverlay({
     displayName: cfg.STUDIO_DISPLAY_NAME,
     tagline: cfg.STUDIO_TAGLINE,
     bookingUrl: (cfg.STUDIO_BOOKING_URL as string | undefined) || "",
     businessName: prospect.businessName,
+    fallbackMailto:
+      opEmail && opEmail.includes("@")
+        ? `mailto:${opEmail}?subject=${encodeURIComponent("Book a 15-min call")}`
+        : undefined,
   });
 
   let files: StaticSiteFile[] = [];

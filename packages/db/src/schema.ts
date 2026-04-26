@@ -47,10 +47,12 @@ export const campaigns = pgTable("campaigns", {
   status: varchar("status", { length: 32 }).default("active").notNull(), // active | paused | complete
   maxProspects: integer("max_prospects").default(200).notNull(),
 
-  outreachChannel: varchar("outreach_channel", { length: 16 }).default("linkedin").notNull(), // email | linkedin | both
+  outreachChannel: varchar("outreach_channel", { length: 16 }).default("both").notNull(), // email | linkedin | both
   imageryStrategy: varchar("imagery_strategy", { length: 16 }).default("none").notNull(),
   autoSendEnabled: boolean("auto_send_enabled").default(false).notNull(),
   autoApproveCategories: text("auto_approve_categories").array(),
+  /** When false, ENRICHED prospects stay in queue until operator starts redesign. */
+  autoRedesignAfterEnrich: boolean("auto_redesign_after_enrich").default(true).notNull(),
 
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
@@ -76,6 +78,13 @@ export const prospects = pgTable(
     email: text("email"),
     phone: text("phone"),
     linkedinUrl: text("linkedin_url"),
+
+    contactFirstName: text("contact_first_name"),
+    contactLastName: text("contact_last_name"),
+    contactTitle: text("contact_title"),
+    contactEmailConfidence: integer("contact_email_confidence"),
+    contactEmailType: text("contact_email_type"),
+    contactSource: text("contact_source"),
 
     // LinkedIn-specific (Unipile identifiers)
     linkedinProviderId: text("linkedin_provider_id"),
@@ -278,6 +287,8 @@ export const marketScans = pgTable(
     pctOutdatedEstimate: numeric("pct_outdated_estimate", { precision: 3, scale: 2 }),
     opportunityScore: numeric("opportunity_score", { precision: 6, scale: 2 }),
     nicheTicketWeight: numeric("niche_ticket_weight", { precision: 3, scale: 2 }),
+    outcomeScore: numeric("outcome_score", { precision: 4, scale: 3 }),
+    source: varchar("source", { length: 24 }).default("scout").notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
@@ -318,6 +329,7 @@ export const operatorSettings = pgTable("operator_settings", {
   quietHoursEnd: time("quiet_hours_end"),
   autoSendRules: jsonb("auto_send_rules"),
   linkedinDailyCap: integer("linkedin_daily_cap").default(10).notNull(),
+  preferences: jsonb("preferences"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 

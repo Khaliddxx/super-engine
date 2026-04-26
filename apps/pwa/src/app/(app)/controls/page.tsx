@@ -3,7 +3,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Play, Pause, Plus, RefreshCw, Search, MoreVertical, LogOut, Zap, RotateCw } from "lucide-react";
 import { toast } from "sonner";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { api } from "../../../lib/api";
@@ -18,7 +18,15 @@ type Campaign = {
   status: string;
   maxProspects: number;
   outreachChannel: string;
+  autoRedesignAfterEnrich?: boolean;
   createdAt: string;
+};
+
+type Icp = {
+  countries?: string[];
+  ticketBand?: string;
+  excludedNicheGroups?: string[];
+  successDescription?: string;
 };
 
 type Settings = {
@@ -27,6 +35,8 @@ type Settings = {
   claudeModel: string;
   unipileConfigured: boolean;
   slackConfigured: boolean;
+  instantlyConfigured?: boolean;
+  icp: Icp | null;
 };
 
 export default function ControlsPage() {
@@ -87,13 +97,24 @@ export default function ControlsPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["campaigns"] }),
   });
 
+  const patchAutoRedesign = useMutation({
+    mutationFn: ({ id, v }: { id: string; v: boolean }) =>
+      api(`/api/campaigns/${id}`, { method: "PATCH", body: { autoRedesignAfterEnrich: v } }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["campaigns"] }),
+    onError: (e: any) => toast.error(e.message ?? "Update failed"),
+  });
+
   const scan = useMutation({
     mutationFn: (id: string) => api(`/api/campaigns/${id}/scan`, { method: "POST", body: {} }),
     onSuccess: (d: any) => {
       const s = d.summary ?? {};
       const polished = (s.skippedSiteAlreadyStrong ?? 0) + (s.skippedTooPolished ?? 0);
-      const polishedNote = polished > 0 ? ` · skipped ${polished} polished` : "";
-      toast.success(`Scanned: +${s.inserted ?? 0} new${polishedNote} · ${s.skippedDuplicateDomain ?? 0} dupes`);
+      const polishedNote = polished > 0 ? ` · skipped ${polished} strong/polished` : "";
+      const weak = s.insertedWithHomepageFetchFailed ?? 0;
+      const weakNote = weak > 0 ? ` · ${weak} with fetch-failed homepages` : "";
+      toast.success(
+        `Scanned: +${s.inserted ?? 0} new${polishedNote}${weakNote} · ${s.skippedDuplicateDomain ?? 0} dupes`,
+      );
     },
     onError: (e: any) => toast.error(e.message ?? "Scan failed"),
   });
@@ -128,6 +149,50 @@ export default function ControlsPage() {
       toast.success("Saved");
       qc.invalidateQueries({ queryKey: ["settings"] });
     },
+  });
+
+  const [icpCountries, setIcpCountries] = useState("");
+  const [icpTicket, setIcpTicket] = useState("");
+  const [icpExcluded, setIcpExcluded] = useState("");
+  const [icpSuccess, setIcpSuccess] = useState("");
+  const [icpLoaded, setIcpLoaded] = useState(false);
+
+  useEffect(() => {
+    if (!settingsQ.data || icpLoaded) return;
+    const icp = settingsQ.data.icp;
+    if (icp) {
+      setIcpCountries((icp.countries ?? []).join(", "));
+      setIcpTicket(icp.ticketBand ?? "");
+      setIcpExcluded((icp.excludedNicheGroups ?? []).join(", "));
+      setIcpSuccess(icp.successDescription ?? "");
+    }
+    setIcpLoaded(true);
+  }, [settingsQ.data, icpLoaded]);
+
+  const saveIcp = useMutation({
+    mutationFn: () =>
+      api("/api/settings", {
+        method: "POST",
+        body: {
+          icp: {
+            countries: icpCountries
+              .split(",")
+              .map((s) => s.trim().toUpperCase())
+              .filter(Boolean),
+            ticketBand: icpTicket.trim() || undefined,
+            excludedNicheGroups: icpExcluded
+              .split(",")
+              .map((s) => s.trim().toLowerCase())
+              .filter(Boolean),
+            successDescription: icpSuccess.trim() || undefined,
+          },
+        },
+      }),
+    onSuccess: () => {
+      toast.success("ICP saved");
+      qc.invalidateQueries({ queryKey: ["settings"] });
+    },
+    onError: (e: any) => toast.error(e.message ?? "Save failed"),
   });
 
   const retryBulk = useMutation({
@@ -251,6 +316,21 @@ export default function ControlsPage() {
                 <RefreshCw className={`w-3.5 h-3.5 ${runCycle.isPending ? "animate-spin" : ""}`} /> Run cycle
               </button>
             </div>
+            <label className="flex items-center gap-2 text-xs text-fg/90 cursor-pointer">
+              <input
+                type="checkbox"
+                className="rounded border-border"
+                checked={c.autoRedesignAfterEnrich !== false}
+                onChange={(e) =>
+                  patchAutoRedesign.mutate({ id: c.id, v: e.target.checked })
+                }
+                disabled={patchAutoRedesign.isPending}
+              />
+              <span>
+                Auto-run AI redesign after enrich{" "}
+                <span className="text-muted">(off = approve in Queue first)</span>
+              </span>
+            </label>
           </div>
         ))}
       </section>
@@ -312,11 +392,54 @@ export default function ControlsPage() {
 
       {settingsQ.data && (
         <section className="card p-4 space-y-3">
+          <h2 className="text-sm font-medium">ICP (for AI market discover)</h2>
+          <p className="text-[11px] text-muted">
+            Used when you run &quot;AI suggest&quot; on Markets — guides Claude and filters vertical groups.
+          </p>
+          <input
+            className="input text-sm"
+            placeholder="Countries (comma) e.g. US, AU, NL"
+            value={icpCountries}
+            onChange={(e) => setIcpCountries(e.target.value)}
+          />
+          <select className="input text-sm" value={icpTicket} onChange={(e) => setIcpTicket(e.target.value)}>
+            <option value="">Ticket band (any)</option>
+            <option value="low">low</option>
+            <option value="mid">mid</option>
+            <option value="high">high</option>
+          </select>
+          <input
+            className="input text-sm"
+            placeholder="Excluded niche groups (comma) e.g. lodging, food"
+            value={icpExcluded}
+            onChange={(e) => setIcpExcluded(e.target.value)}
+          />
+          <textarea
+            className="input text-sm resize-none"
+            rows={3}
+            placeholder="What a great client looks like for you (one paragraph)"
+            value={icpSuccess}
+            onChange={(e) => setIcpSuccess(e.target.value)}
+          />
+          <button
+            type="button"
+            onClick={() => saveIcp.mutate()}
+            disabled={saveIcp.isPending}
+            className="btn-secondary w-full text-sm"
+          >
+            {saveIcp.isPending ? "Saving…" : "Save ICP"}
+          </button>
+        </section>
+      )}
+
+      {settingsQ.data && (
+        <section className="card p-4 space-y-3">
           <h2 className="text-sm font-medium">Settings</h2>
           <div className="text-xs text-muted space-y-1">
             <p>Operator: {settingsQ.data.operator.name}</p>
             <p>Model: {settingsQ.data.claudeModel}</p>
             <p>Unipile: {settingsQ.data.unipileConfigured ? "configured" : "missing"}</p>
+            <p>Instantly: {settingsQ.data.instantlyConfigured ? "configured" : "missing"}</p>
             <p>Slack: {settingsQ.data.slackConfigured ? "configured" : "off"}</p>
           </div>
           <div className="flex items-center gap-2">

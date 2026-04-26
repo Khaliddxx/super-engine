@@ -135,7 +135,7 @@ export async function qualifyProspect(db: DbClient, prospect: Prospect): Promise
     }
 
     // Step 3: vision check (only for sites that passed the structural gate).
-    const shotUrl = await screenshot(prospect.website).catch((e) => {
+    const shotUrl = await screenshot(prospect.website, { width: 1152, height: 800 }).catch((e) => {
       logger.warn({ err: String(e), prospectId: prospect.id }, "screenshot failed");
       throw new RejectProspectError("screenshot_failed", String(e));
     });

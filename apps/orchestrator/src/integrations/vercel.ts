@@ -78,8 +78,9 @@ async function disableProjectProtection(projectId: string): Promise<boolean> {
 export interface StaticSiteFile {
   /** Path within the deployment root, e.g. "index.html", "about.html". */
   file: string;
-  /** UTF-8 source; will be base64-encoded before upload. */
+  /** File contents as UTF-8 text, or base64 when `encoding` is `"base64"` (binary assets). */
   data: string;
+  encoding?: "utf8" | "base64";
 }
 
 export async function deployStaticSite(args: {
@@ -94,11 +95,15 @@ export async function deployStaticSite(args: {
   const suffix = args.projectNameSuffix ? `-${slugify(args.projectNameSuffix).slice(0, 18)}` : "";
   const projectName = `${slugify(args.businessName)}-${shortHash(args.prospectId)}${suffix}`.slice(0, 63);
 
-  const files = args.files.map((f) => ({
-    file: f.file,
-    data: Buffer.from(f.data).toString("base64"),
-    encoding: "base64" as const,
-  }));
+  const files = args.files.map((f) => {
+    const buf =
+      f.encoding === "base64" ? Buffer.from(f.data, "base64") : Buffer.from(f.data, "utf8");
+    return {
+      file: f.file,
+      data: buf.toString("base64"),
+      encoding: "base64" as const,
+    };
+  });
 
   const res = await fetch(`https://api.vercel.com/v13/deployments${qs}`, {
     method: "POST",

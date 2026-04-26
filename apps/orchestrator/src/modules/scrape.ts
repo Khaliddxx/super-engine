@@ -12,6 +12,8 @@ export interface ScrapeSummary {
   skippedChainDomain: number;
   skippedSiteAlreadyStrong: number;
   skippedTooPolished: number;
+  /** Inserted as NEW despite site-strength homepage fetch failing (403/timeout); qualify will still vision-check. */
+  insertedWithHomepageFetchFailed: number;
 }
 
 // Domains that are chain/franchise properties — the website is corporate, not local.
@@ -156,6 +158,7 @@ export async function scrapeProspectsForCampaign(
     skippedChainDomain: 0,
     skippedSiteAlreadyStrong: 0,
     skippedTooPolished: 0,
+    insertedWithHomepageFetchFailed: 0,
   };
 
   // Pre-filter pass: drop chains, dupes, and obviously polished businesses.
@@ -202,15 +205,14 @@ export async function scrapeProspectsForCampaign(
     }),
   );
 
-  // Score outdated-ness: lower strength = more outdated = better target.
+  // Score outdated-ness: lower structural strength = more outdated = better target.
+  // Do NOT penalize homepage fetch failures here — those were mis-bucketed as
+  // "too polished" and killed yield; we still insert and let qualify (Microlink + vision) decide.
   const scored = strengthPairs
     .map(({ c, strength }) => {
       const polishedScore = looksTooPolished(c) ? 1 : 0;
       const strengthScore = strength ? strength.score : 0;
-      // Composite "polished score" (lower is better target). Also penalize
-      // sites that didn't even have a working homepage (status != 200) so
-      // we don't waste credits on dead links.
-      const composite = strengthScore + polishedScore * 2 + (strength?.scannedHomepageOk === false ? 5 : 0);
+      const composite = strengthScore + polishedScore * 2;
       return { c, strength, composite };
     })
     .sort((a, b) => a.composite - b.composite);
@@ -229,6 +231,10 @@ export async function scrapeProspectsForCampaign(
     if (composite >= 4) {
       summary.skippedTooPolished++;
       continue;
+    }
+
+    if (strength && strength.scannedHomepageOk === false) {
+      summary.insertedWithHomepageFetchFailed++;
     }
 
     existingDomains.add(c.domain);

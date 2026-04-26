@@ -26,6 +26,7 @@ export async function campaignRoutes(app: FastifyInstance, opts: Opts): Promise<
       maxProspects?: number;
       outreachChannel?: string;
       imageryStrategy?: string;
+      autoRedesignAfterEnrich?: boolean;
     };
   }>("/", async (req, reply) => {
     const db = opts.db();
@@ -42,9 +43,24 @@ export async function campaignRoutes(app: FastifyInstance, opts: Opts): Promise<
         outreachChannel: body.outreachChannel ?? "both",
         imageryStrategy: body.imageryStrategy ?? "none",
         autoSendEnabled: false,
+        ...(typeof body.autoRedesignAfterEnrich === "boolean"
+          ? { autoRedesignAfterEnrich: body.autoRedesignAfterEnrich }
+          : {}),
       })
       .returning();
     return { campaign: row };
+  });
+
+  app.patch<{ Params: { id: string }; Body: { autoRedesignAfterEnrich?: boolean } }>("/:id", async (req, reply) => {
+    const db = opts.db();
+    if (typeof req.body?.autoRedesignAfterEnrich !== "boolean") {
+      return reply.status(400).send({ error: "autoRedesignAfterEnrich_boolean_required" });
+    }
+    await db
+      .update(campaigns)
+      .set({ autoRedesignAfterEnrich: req.body.autoRedesignAfterEnrich })
+      .where(eq(campaigns.id, req.params.id));
+    return { ok: true };
   });
 
   app.post<{ Params: { id: string }; Body: { maxResults?: number } }>("/:id/scan", async (req) => {

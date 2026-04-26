@@ -89,7 +89,10 @@ export interface EmailInitialInput {
   business_name: string;
   city: string;
   top_issues: string[];
+  /** Live redesign preview when available */
   redesign_url: string;
+  /** Fallback link (their website) when no preview yet */
+  website_url: string;
   operator_first_name: string;
 }
 
@@ -97,7 +100,7 @@ export const EMAIL_INITIAL_PROMPT_V1 = {
   version: "2.0",
   deployedAt: "2026-04-26",
   render: (i: EmailInitialInput) => `Write a cold email from an independent web designer to the owner or manager of a local business.
-The email introduces a specific redesigned preview of their homepage.
+The email introduces either a live redesign preview of their homepage (if a preview URL exists) or a concrete observation about their current site with a link to it.
 Tone: warm, direct, respectful of their time. Not salesy. No jargon.
 
 <prospect>
@@ -106,9 +109,13 @@ City where THEIR business is: ${i.city}
 Issues I noticed on their site: ${i.top_issues.join("; ")}
 </prospect>
 
-<redesign>
-Live preview URL (include this exactly once): ${i.redesign_url}
-</redesign>
+<link_to_share>
+${
+  i.redesign_url?.trim()
+    ? `Live redesign preview URL (include this exactly once in the email): ${i.redesign_url}`
+    : `Their current website URL (include this exactly once as the link to look at): ${i.website_url || "(missing — do not invent a URL)"}`
+}
+</link_to_share>
 
 HARD RULES:
 - Subject line under 50 chars. No clickbait, no caps lock, no emoji.
@@ -116,7 +123,7 @@ HARD RULES:
 - Do NOT claim to be in their city or any city. No "fellow local" language.
 - Do NOT use em-dashes (—) or en-dashes (–). Use commas or periods.
 - Reference ONE specific issue from the list above concretely.
-- Include the preview link exactly once.
+- Include the link from link_to_share exactly once.
 - No "I hope this finds you well".
 - No P.S.
 - Sign off with ONLY the first name on its own line: "${i.operator_first_name}"

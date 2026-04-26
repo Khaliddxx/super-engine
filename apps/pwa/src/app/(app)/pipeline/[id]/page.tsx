@@ -6,7 +6,7 @@ import Link from "next/link";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft, ExternalLink, RefreshCw, Check, Shuffle, Send, Ban, AlertTriangle,
-  Sparkles, Eye, RotateCw,
+  Sparkles, Eye, RotateCw, CalendarClock, PanelRightOpen,
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "../../../../lib/api";
@@ -16,6 +16,8 @@ type Res = {
   prospect: any;
   campaign: any;
   deployments: any[];
+  studioBookingUrl: string | null;
+  studioBookingMailto: string | null;
 };
 
 export default function PipelineDetailPage() {
@@ -66,11 +68,17 @@ export default function PipelineDetailPage() {
   }
 
   useEffect(() => {
-    const channel = data?.campaign?.outreachChannel ?? "linkedin";
+    const channel = data?.campaign?.outreachChannel ?? "both";
     if (data?.prospect?.state === "REDESIGNED" && data?.prospect?.linkedinUrl && (channel === "linkedin" || channel === "both") && !inviteText) {
       draftInvite();
     }
-    if (data?.prospect?.state === "REDESIGNED" && data?.prospect?.email && (channel === "email" || channel === "both") && !emailBody) {
+    const emailStates = ["ENRICHED", "REDESIGNED", "APPROVED_TO_SEND"];
+    if (
+      data?.prospect?.email &&
+      emailStates.includes(data?.prospect?.state) &&
+      (channel === "email" || channel === "both") &&
+      !emailBody
+    ) {
       draftEmail();
     }
   }, [data?.prospect?.state, data?.campaign?.outreachChannel]);
@@ -137,6 +145,40 @@ export default function PipelineDetailPage() {
     },
   });
 
+  const retryEnrich = useMutation({
+    mutationFn: () => api(`/api/pipeline/${id}/retry-enrich`, { method: "POST", body: {} }),
+    onSuccess: () => {
+      toast.success("Enrich re-run");
+      qc.invalidateQueries({ queryKey: ["pipeline"] });
+      refetch();
+    },
+    onError: (e: any) => toast.error(e.message ?? "Retry failed"),
+  });
+
+  const retryRedesign = useMutation({
+    mutationFn: () => api(`/api/pipeline/${id}/retry-redesign`, { method: "POST", body: {} }),
+    onSuccess: () => {
+      toast.success("Redesign re-run");
+      qc.invalidateQueries({ queryKey: ["pipeline"] });
+      refetch();
+    },
+    onError: (e: any) => toast.error(e.message ?? "Retry failed"),
+  });
+
+  const sendEmailNow = useMutation({
+    mutationFn: () =>
+      api(`/api/pipeline/${id}/send-email-now`, {
+        method: "POST",
+        body: { subject: emailSubject.trim() || undefined, body: emailBody.trim() || undefined },
+      }),
+    onSuccess: () => {
+      toast.success("Email queued in Instantly");
+      qc.invalidateQueries({ queryKey: ["pipeline"] });
+      refetch();
+    },
+    onError: (e: any) => toast.error(e.message ?? "Send failed"),
+  });
+
   const retry = useMutation({
     mutationFn: () => api(`/api/pipeline/${id}/retry`, { method: "POST", body: {} }),
     onSuccess: () => {
@@ -177,12 +219,21 @@ export default function PipelineDetailPage() {
   const p = data.prospect;
   const isReviewable = p.state === "REDESIGNED" || p.state === "APPROVED_TO_SEND";
   const isRejected = p.state === "REJECTED";
-  const outreachChannel = data.campaign?.outreachChannel ?? "linkedin";
+  const outreachChannel = data.campaign?.outreachChannel ?? "both";
   const wantsLinkedIn = outreachChannel === "linkedin" || outreachChannel === "both";
   const wantsEmail = outreachChannel === "email" || outreachChannel === "both";
   const canSendLinkedIn = !wantsLinkedIn || Boolean(p.linkedinUrl && inviteText.trim());
   const canSendEmail = !wantsEmail || Boolean(p.email && emailSubject.trim() && emailBody.trim());
   const hasAnySendTarget = Boolean((wantsLinkedIn && p.linkedinUrl) || (wantsEmail && p.email));
+  const emailWorkflowStates = ["ENRICHED", "REDESIGNED", "APPROVED_TO_SEND"];
+  const canShowEmailWorkflow = wantsEmail && emailWorkflowStates.includes(p.state);
+  const channelLabel =
+    outreachChannel === "both" ? "LinkedIn + Email" : outreachChannel === "email" ? "Email only" : "LinkedIn only";
+  const contactName = [p.contactFirstName, p.contactLastName].filter(Boolean).join(" ").trim();
+  const showContactStrip = Boolean(contactName || p.contactTitle || p.email || p.linkedinUrl);
+  const stale30m = Boolean(
+    p.updatedAt && Date.now() - new Date(p.updatedAt).getTime() > 30 * 60 * 1000,
+  );
 
   return (
     <div className="max-w-xl mx-auto px-4 safe-top pb-4">
@@ -207,6 +258,7 @@ export default function PipelineDetailPage() {
             {p.variantLayout && (
               <span className="pill border border-border text-muted bg-surface2">{p.variantLayout}</span>
             )}
+            <span className="pill border border-border text-muted bg-surface2 text-[11px]">{channelLabel}</span>
           </div>
           <h1 className="font-serif text-xl mt-2">{p.businessName}</h1>
           <p className="text-xs text-muted">
@@ -222,6 +274,57 @@ export default function PipelineDetailPage() {
             >
               {p.website} <ExternalLink className="w-3 h-3" />
             </a>
+          )}
+          {showContactStrip && (
+            <div className="mt-3 pt-3 border-t border-border space-y-2 text-sm">
+              {(contactName || p.contactTitle) && (
+                <p>
+                  {contactName ? <span className="font-medium">{contactName}</span> : null}
+                  {contactName && p.contactTitle ? <span className="text-muted"> · </span> : null}
+                  {p.contactTitle ? <span className="text-muted">{p.contactTitle}</span> : null}
+                </p>
+              )}
+              <div className="flex flex-wrap gap-2 text-xs items-center">
+                {p.email && (
+                  <a href={`mailto:${p.email}`} className="pill bg-surface2 border border-border hover:border-accent">
+                    {p.email}
+                  </a>
+                )}
+                {p.linkedinUrl && (
+                  <a
+                    href={p.linkedinUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="pill bg-surface2 border border-border hover:border-accent inline-flex items-center gap-1"
+                  >
+                    LinkedIn <ExternalLink className="w-3 h-3" />
+                  </a>
+                )}
+                {p.contactEmailConfidence != null && (
+                  <span className="text-muted">Hunter conf. {p.contactEmailConfidence}%</span>
+                )}
+              </div>
+            </div>
+          )}
+          {stale30m && p.state === "QUALIFIED" && (
+            <button
+              type="button"
+              onClick={() => retryEnrich.mutate()}
+              disabled={retryEnrich.isPending}
+              className="btn-secondary w-full mt-3 text-xs"
+            >
+              Retry enrich (stuck 30m+)
+            </button>
+          )}
+          {stale30m && p.state === "ENRICHED" && !p.redesignHtmlUrl && (
+            <button
+              type="button"
+              onClick={() => retryRedesign.mutate()}
+              disabled={retryRedesign.isPending}
+              className="btn-secondary w-full mt-3 text-xs"
+            >
+              Retry redesign (stuck 30m+)
+            </button>
           )}
         </div>
 
@@ -253,19 +356,50 @@ export default function PipelineDetailPage() {
 
         {p.redesignHtmlUrl && (
           <div className="card overflow-hidden">
-            <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+            <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-b border-border">
               <div className="flex items-center gap-2">
                 <Sparkles className="w-4 h-4 text-accent" />
                 <p className="text-sm font-medium">Redesign preview</p>
               </div>
-              <a
-                href={p.redesignHtmlUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="btn-secondary text-xs"
-              >
-                <Eye className="w-3.5 h-3.5" /> Open
-              </a>
+              <div className="flex flex-wrap items-center gap-2">
+                <Link
+                  href={`/pipeline/${id}/preview`}
+                  className="btn text-xs"
+                >
+                  <PanelRightOpen className="w-3.5 h-3.5" /> Studio preview
+                </Link>
+                {(() => {
+                  const bookHref = data?.studioBookingUrl ?? data?.studioBookingMailto ?? null;
+                  const bookNewTab = Boolean(data?.studioBookingUrl);
+                  if (!bookHref) {
+                    return (
+                      <span
+                        className="btn-secondary text-xs opacity-50 cursor-not-allowed"
+                        title="Set STUDIO_BOOKING_URL or OPERATOR_EMAIL on the orchestrator"
+                      >
+                        <CalendarClock className="w-3.5 h-3.5" /> Book 15-min
+                      </span>
+                    );
+                  }
+                  return (
+                    <a
+                      href={bookHref}
+                      {...(bookNewTab ? { target: "_blank", rel: "noreferrer" } : {})}
+                      className="btn-secondary text-xs"
+                    >
+                      <CalendarClock className="w-3.5 h-3.5" /> Book 15-min
+                    </a>
+                  );
+                })()}
+                <a
+                  href={p.redesignHtmlUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="btn-secondary text-xs"
+                >
+                  <Eye className="w-3.5 h-3.5" /> Open site
+                </a>
+              </div>
             </div>
             <iframe
               src={p.redesignHtmlUrl}
@@ -287,6 +421,55 @@ export default function PipelineDetailPage() {
                 </li>
               ))}
             </ul>
+          </div>
+        )}
+
+        {canShowEmailWorkflow && (
+          <div className="card p-4 space-y-2">
+            <div className="flex items-center justify-between">
+              <p className="text-xs uppercase tracking-wider text-muted">Instantly email</p>
+              <button
+                type="button"
+                onClick={draftEmail}
+                disabled={draftingEmail || !p.email}
+                className="text-xs text-accent disabled:opacity-40"
+              >
+                {draftingEmail ? "Drafting…" : "Regenerate email"}
+              </button>
+            </div>
+            <input
+              value={emailSubject}
+              onChange={(e) => setEmailSubject(e.target.value)}
+              disabled={!p.email}
+              className="input text-sm"
+              placeholder={!p.email ? "No email found" : "Subject"}
+            />
+            <textarea
+              rows={6}
+              value={emailBody}
+              onChange={(e) => setEmailBody(e.target.value)}
+              disabled={!p.email}
+              className="input resize-none text-sm"
+              placeholder={!p.email ? "No email found" : "Email body"}
+            />
+            <button
+              type="button"
+              onClick={() => sendEmailNow.mutate()}
+              disabled={
+                sendEmailNow.isPending ||
+                !p.email ||
+                !emailSubject.trim() ||
+                !emailBody.trim()
+              }
+              className="btn-primary w-full text-sm"
+            >
+              <Send className="w-4 h-4" />
+              {sendEmailNow.isPending ? "Sending…" : "Send email now (Instantly)"}
+            </button>
+            <p className="text-[11px] text-muted leading-snug">
+              Adds this prospect to your Instantly campaign with subject/body variables. Requires website or preview for
+              link context.
+            </p>
           </div>
         )}
 
@@ -317,35 +500,6 @@ export default function PipelineDetailPage() {
                 }
               />
               <p className="text-[11px] text-muted text-right">{inviteText.length}/299</p>
-            </div>
-
-            <div className="card p-4 space-y-2">
-              <div className="flex items-center justify-between">
-                <p className="text-xs uppercase tracking-wider text-muted">
-                  Instantly email {wantsEmail ? "" : "(not used)"}
-                </p>
-                <button onClick={draftEmail} disabled={draftingEmail || !p.email || !wantsEmail} className="text-xs text-accent disabled:opacity-40">
-                  {draftingEmail ? "Drafting…" : "Regenerate email"}
-                </button>
-              </div>
-              <input
-                value={emailSubject}
-                onChange={(e) => setEmailSubject(e.target.value)}
-                disabled={!wantsEmail}
-                className="input text-sm"
-                placeholder={!p.email ? "No email found" : "Subject"}
-              />
-              <textarea
-                rows={6}
-                value={emailBody}
-                onChange={(e) => setEmailBody(e.target.value)}
-                disabled={!wantsEmail}
-                className="input resize-none text-sm"
-                placeholder={!p.email ? "No email found" : "Email body"}
-              />
-              <p className="text-[11px] text-muted leading-snug">
-                Channel: {outreachChannel}. Email sends by adding this prospect to the configured Instantly campaign.
-              </p>
             </div>
 
             <div className="card p-4 space-y-2">

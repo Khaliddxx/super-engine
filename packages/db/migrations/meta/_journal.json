@@ -29,6 +29,13 @@
       "when": 1777148473600,
       "tag": "0003_site_strength",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1778000000000,
+      "tag": "0004_auto_redesign_after_enrich",
+      "breakpoints": true
     }
   ]
 }

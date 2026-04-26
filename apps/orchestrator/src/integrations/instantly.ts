@@ -10,7 +10,7 @@ export interface InstantlyLeadInput {
   phone: string | null;
   subject: string;
   body: string;
-  redesignUrl: string;
+  redesignUrl: string | null;
   topIssue: string | null;
 }
 
@@ -63,7 +63,7 @@ export async function createInstantlyLead(input: InstantlyLeadInput): Promise<In
       custom_variables: {
         se_subject: input.subject,
         se_body: input.body,
-        redesign_url: input.redesignUrl,
+        redesign_url: input.redesignUrl ?? "",
         top_issue: input.topIssue ?? "",
       },
     }),

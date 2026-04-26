@@ -5,25 +5,105 @@ import { logger } from "../lib/logger.js";
 import crypto from "node:crypto";
 
 /**
+ * Broad vertical buckets so diversify caps lodging as one family, not three
+ * separate max-weight niches.
+ */
+export const NICHE_GROUPS = [
+  "lodging",
+  "food",
+  "beauty",
+  "legal",
+  "dental",
+  "medical",
+  "fitness",
+  "real-estate",
+  "professional-services",
+  "retail",
+  "trades",
+  "events",
+  "creative",
+  "other",
+] as const;
+export type NicheGroupId = (typeof NICHE_GROUPS)[number];
+
+/** Lowercase niche key → group id */
+export const NICHE_GROUP_BY_NICHE: Record<string, NicheGroupId> = {
+  "wedding venue": "events",
+  "boutique hotel": "lodging",
+  hotel: "lodging",
+  "luxury resort": "lodging",
+  "private clinic": "medical",
+  "cosmetic surgeon": "medical",
+  "fertility clinic": "medical",
+  "ivf clinic": "medical",
+  orthodontist: "dental",
+  dentist: "dental",
+  dermatologist: "medical",
+  "med spa": "beauty",
+  "law firm": "legal",
+  "real estate agency": "real-estate",
+  architect: "professional-services",
+  "interior designer": "professional-services",
+  "boutique winery": "food",
+  plumber: "trades",
+  hvac: "trades",
+  electrician: "trades",
+  "roofing contractor": "trades",
+  landscaper: "trades",
+  veterinarian: "medical",
+  physiotherapist: "medical",
+  chiropractor: "medical",
+  optometrist: "medical",
+  "yoga studio": "fitness",
+  "pilates studio": "fitness",
+  "personal trainer": "fitness",
+  "massage clinic": "fitness",
+  "music school": "creative",
+  "dance studio": "creative",
+  "tattoo studio": "beauty",
+  "fine dining restaurant": "food",
+  restaurant: "food",
+  cafe: "food",
+  bakery: "food",
+  "wine bar": "food",
+  brewery: "food",
+  bar: "food",
+  "ice cream shop": "food",
+  "nail salon": "beauty",
+  "hair salon": "beauty",
+  "barber shop": "beauty",
+  florist: "retail",
+  photographer: "professional-services",
+  videographer: "professional-services",
+  florists: "retail",
+  "pet groomer": "retail",
+  "tutoring center": "professional-services",
+};
+
+export function nicheGroupOf(niche: string): NicheGroupId {
+  return NICHE_GROUP_BY_NICHE[niche.trim().toLowerCase()] ?? "other";
+}
+
+/**
  * Niche → average deal value weight (higher = pricier redesigns these owners
  * can pay for). Adding new niches is a one-line change.
  */
 export const NICHE_TICKET_WEIGHTS: Record<string, number> = {
-  // High-ticket
+  // High-ticket (lodging variants down-weighted so they do not crowd out law/dental)
   "wedding venue": 2.0,
-  "boutique hotel": 2.0,
-  "hotel": 2.0,
-  "luxury resort": 2.0,
+  "boutique hotel": 1.7,
+  hotel: 1.7,
+  "luxury resort": 1.7,
   "private clinic": 1.8,
   "cosmetic surgeon": 1.8,
   "fertility clinic": 1.8,
   "ivf clinic": 1.8,
   "orthodontist": 1.6,
-  "dentist": 1.5,
-  "dermatologist": 1.5,
-  "med spa": 1.5,
-  "law firm": 1.5,
-  "real estate agency": 1.4,
+  dentist: 1.58,
+  dermatologist: 1.52,
+  "med spa": 1.55,
+  "law firm": 1.55,
+  "real estate agency": 1.45,
   "architect": 1.4,
   "interior designer": 1.4,
   "boutique winery": 1.3,
@@ -172,21 +252,29 @@ export interface ScoutRow {
     valuePotential: number;
     demandDepth: number;
   };
+  /** Blended display score (base Places + optional pipeline outcome boost). */
   opportunityScore: number;
   nicheTicketWeight: number;
+  nicheGroup?: NicheGroupId;
+  source?: string;
+  scanCreatedAt?: string;
+  /** 0–1 pipeline outcome signal; blended into opportunityScore when present. */
+  outcomeScore?: number;
 }
 
 function clamp01(n: number): number {
   return Math.max(0, Math.min(1, n));
 }
 
-function computeScore(
+export function computeMarketCellScore(
   args: {
     placeCount: number;
     pctWithWebsite: number;
     pctOutdatedEstimate: number;
     medianReviews: number;
     nicheTicketWeight: number;
+    /** 0–1 from pipeline outcomes; optional. */
+    outcomeBoost?: number;
   },
 ): { score: number; breakdown: ScoutRow["scoreBreakdown"] } {
   const outdatedNeed = clamp01(args.pctOutdatedEstimate);
@@ -195,12 +283,14 @@ function computeScore(
   const independentness = clamp01(1 - Math.log1p(Math.min(args.medianReviews, 5000)) / Math.log1p(5000));
   const valuePotential = clamp01((args.nicheTicketWeight - 0.6) / (2.0 - 0.6));
   const demandDepth = clamp01(Math.log1p(args.placeCount) / Math.log1p(20));
+  const outcomeBoost = clamp01(args.outcomeBoost ?? 0);
   const score =
     outdatedNeed * 0.36 +
     contactability * 0.24 +
     independentness * 0.2 +
-    valuePotential * 0.14 +
-    demandDepth * 0.06;
+    valuePotential * 0.12 +
+    demandDepth * 0.06 +
+    outcomeBoost * 0.15;
   return {
     score: Math.round(score * 1000) / 10, // 0..100
     breakdown: {
@@ -213,7 +303,7 @@ function computeScore(
   };
 }
 
-async function estimateOutdatedRate(websites: string[]): Promise<number> {
+export async function estimateOutdatedRate(websites: string[]): Promise<number> {
   const sample = websites.slice(0, 5);
   if (sample.length === 0) return 0;
   const strengths = await Promise.all(
@@ -276,7 +366,7 @@ export async function runMarketScout(db: DbClient, opts: ScoutOptions): Promise<
       const medianReviews = reviewCounts.length
         ? reviewCounts[Math.floor(reviewCounts.length / 2)] ?? 0
         : 0;
-      const scored = computeScore({
+      const scored = computeMarketCellScore({
         placeCount: places.length,
         pctWithWebsite,
         pctOutdatedEstimate,
@@ -296,6 +386,8 @@ export async function runMarketScout(db: DbClient, opts: ScoutOptions): Promise<
         scoreBreakdown: scored.breakdown,
         opportunityScore: scored.score,
         nicheTicketWeight: tw,
+        nicheGroup: nicheGroupOf(cell.niche),
+        source: "scout",
       };
       results.push(row);
 
@@ -312,6 +404,7 @@ export async function runMarketScout(db: DbClient, opts: ScoutOptions): Promise<
         opportunityScore: row.opportunityScore.toString(),
         nicheTicketWeight: row.nicheTicketWeight.toString(),
         expiresAt,
+        source: "scout",
       });
     } catch (err) {
       logger.warn({ err: String(err), cell }, "market scout cell failed");

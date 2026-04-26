@@ -17,6 +17,9 @@ type Row = {
   rejectionReason: string | null;
   qualificationScore: string | null;
   qualificationIssues: string[] | null;
+  email: string | null;
+  linkedinUrl: string | null;
+  updatedAt: string;
 };
 
 const WINDOWS: Array<{ key: string; label: string }> = [
@@ -91,23 +94,36 @@ export default function PipelinePage() {
               </button>
               {isOpen && (
                 <div className="border-t border-border divide-y divide-border">
-                  {rows.slice(0, 50).map((r) => (
-                    <Link
-                      key={r.id}
-                      href={`/pipeline/${r.id}`}
-                      className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-surface2"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <p className="font-medium truncate">{r.businessName}</p>
-                        <p className="text-xs text-muted truncate">
-                          {r.niche}
-                          {r.city ? ` · ${r.city}` : ""}
-                          {r.rejectionReason ? ` · ${r.rejectionReason}` : ""}
-                        </p>
-                      </div>
-                      <ChevronRight className="w-4 h-4 text-muted" />
-                    </Link>
-                  ))}
+                  {rows.slice(0, 50).map((r) => {
+                    const stuck =
+                      ["NEW", "ENRICHED", "QUALIFIED"].includes(r.state) &&
+                      Date.now() - new Date(r.updatedAt).getTime() > 2 * 60 * 60 * 1000;
+                    return (
+                      <Link
+                        key={r.id}
+                        href={`/pipeline/${r.id}`}
+                        className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-surface2"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="font-medium truncate flex items-center gap-2">
+                            {r.businessName}
+                            {stuck && (
+                              <span className="pill text-[10px] bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                                stuck
+                              </span>
+                            )}
+                          </p>
+                          <p className="text-xs text-muted truncate">
+                            {r.niche}
+                            {r.city ? ` · ${r.city}` : ""}
+                            {r.email ? ` · ${r.email}` : ""}
+                            {r.rejectionReason ? ` · ${r.rejectionReason}` : ""}
+                          </p>
+                        </div>
+                        <ChevronRight className="w-4 h-4 text-muted" />
+                      </Link>
+                    );
+                  })}
                 </div>
               )}
             </section>

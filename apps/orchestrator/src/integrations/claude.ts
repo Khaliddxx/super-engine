@@ -1,5 +1,27 @@
 import Anthropic from "@anthropic-ai/sdk";
+import sharp from "sharp";
 import { env } from "../lib/env.js";
+
+/** Anthropic vision limit is 5 MB base64 payload; stay under with margin. */
+const VISION_IMAGE_MAX_BYTES = 4_000_000;
+
+async function bufferToVisionPayload(
+  buf: Buffer,
+  contentType: string,
+): Promise<{ data: string; mediaType: "image/png" | "image/jpeg" }> {
+  let ct = (contentType.split(";")[0] ?? "image/png").trim();
+  let b = buf;
+  if (b.length > VISION_IMAGE_MAX_BYTES || !/^image\/(png|jpeg|jpg)$/i.test(ct)) {
+    b = await sharp(b)
+      .rotate()
+      .resize({ width: 1600, height: 1200, fit: "inside", withoutEnlargement: true })
+      .jpeg({ quality: 80, mozjpeg: true })
+      .toBuffer();
+    ct = "image/jpeg";
+  }
+  const mediaType: "image/png" | "image/jpeg" = ct.toLowerCase().includes("png") ? "image/png" : "image/jpeg";
+  return { data: b.toString("base64"), mediaType };
+}
 
 let cached: Anthropic | null = null;
 
@@ -31,12 +53,11 @@ export async function claudeVision(
   imageUrl: string,
   opts: { maxTokens?: number; model?: string } = {},
 ): Promise<string> {
-  // Fetch the image and pass it as base64 to avoid URL-source limitations
   const imgRes = await fetch(imageUrl);
   if (!imgRes.ok) throw new Error(`Failed to fetch screenshot: ${imgRes.status}`);
   const contentType = imgRes.headers.get("content-type") ?? "image/png";
   const buf = Buffer.from(await imgRes.arrayBuffer());
-  const base64 = buf.toString("base64");
+  const { data: base64, mediaType } = await bufferToVisionPayload(buf, contentType);
 
   const res = await claude().messages.create({
     model: opts.model ?? CLAUDE_MODEL(),
@@ -45,7 +66,7 @@ export async function claudeVision(
       {
         role: "user",
         content: [
-          { type: "image", source: { type: "base64", media_type: contentType as "image/png" | "image/jpeg", data: base64 } },
+          { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
           { type: "text", text: prompt },
         ],
       },
@@ -67,12 +88,13 @@ export async function claudeVisionMulti(
       if (!imgRes.ok) throw new Error(`Failed to fetch screenshot: ${imgRes.status}`);
       const contentType = imgRes.headers.get("content-type") ?? "image/png";
       const buf = Buffer.from(await imgRes.arrayBuffer());
+      const { data, mediaType } = await bufferToVisionPayload(buf, contentType);
       return {
         type: "image" as const,
         source: {
           type: "base64" as const,
-          media_type: contentType as "image/png" | "image/jpeg",
-          data: buf.toString("base64"),
+          media_type: mediaType,
+          data,
         },
       };
     }),

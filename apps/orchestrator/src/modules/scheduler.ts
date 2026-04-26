@@ -1,4 +1,4 @@
-import { asc, eq, type DbClient, prospects, campaigns, type Prospect } from "@super-engine/db";
+import { asc, eq, and, type DbClient, prospects, campaigns, type Prospect } from "@super-engine/db";
 import { enrichProspect } from "./enrich.js";
 import { qualifyProspect } from "./qualify.js";
 import { redesignProspect } from "./redesign.js";
@@ -12,6 +12,18 @@ async function listByState(db: DbClient, state: string, limit = 10): Promise<Pro
     .where(eq(prospects.state, state))
     .orderBy(asc(prospects.updatedAt))
     .limit(limit);
+}
+
+/** ENRICHED prospects whose campaign still allows automatic redesign. */
+async function listEnrichedForAutoRedesign(db: DbClient, limit: number): Promise<Prospect[]> {
+  const rows = await db
+    .select()
+    .from(prospects)
+    .innerJoin(campaigns, eq(campaigns.id, prospects.campaignId))
+    .where(and(eq(prospects.state, "ENRICHED"), eq(campaigns.autoRedesignAfterEnrich, true)))
+    .orderBy(asc(prospects.updatedAt))
+    .limit(limit);
+  return rows.map((r) => r.prospects);
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
@@ -60,8 +72,8 @@ export async function runPipelineCycle(db: DbClient): Promise<Record<string, num
     }
   }
 
-  // 3. REDESIGN using the real assets we just extracted
-  for (const p of await listByState(db, "ENRICHED", 3)) {
+  // 3. REDESIGN using the real assets we just extracted (campaign may require manual queue approval)
+  for (const p of await listEnrichedForAutoRedesign(db, 3)) {
     try {
       await withTimeout(redesignProspect(db, p), 240_000, "redesign");
       redesigned++;

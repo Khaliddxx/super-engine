@@ -171,6 +171,8 @@ export const ServerEnvSchema = z.object({
 
   ANTHROPIC_API_KEY: z.string().startsWith("sk-ant-"),
   CLAUDE_MODEL: z.string().default("claude-sonnet-4-5-20250929"),
+  /** Optional override for navbar-only HTML patches (e.g. Sonnet 4.6). Falls back to CLAUDE_MODEL when empty. */
+  NAVBAR_PATCH_MODEL: z.string().optional().or(z.literal("")),
 
   GOOGLE_PLACES_API_KEY: z.string().min(1),
   HUNTER_API_KEY: z.string().min(1),

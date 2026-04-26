@@ -4,6 +4,7 @@ export * from "./redesign-quality.js";
 export * from "./template.js";
 export * from "./outreach.js";
 export * from "./triage.js";
+export * from "./markets.js";
 
 export interface PromptVersion<TInput> {
   version: string;

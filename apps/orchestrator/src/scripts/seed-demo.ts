@@ -12,7 +12,7 @@ export async function seedDemoTriage(db: DbClient, n = 3): Promise<number> {
           niche: "nail salon",
           targetCity: "Sydney",
           targetCountry: "AU",
-          outreachChannel: "linkedin",
+          outreachChannel: "both",
           imageryStrategy: "none",
         })
         .returning()

@@ -2,11 +2,13 @@ import type { FastifyInstance, FastifyPluginOptions } from "fastify";
 import {
   desc,
   eq,
+  and,
   type DbClient,
   triage,
   prospects,
   messages,
   threads,
+  campaigns,
 } from "@super-engine/db";
 import { requireAuth } from "../auth-guard.js";
 import { sendChatMessage, startChat } from "../../integrations/unipile.js";
@@ -15,6 +17,7 @@ import { transition } from "../../modules/transitions.js";
 import { sanitizeTopIssues } from "../../modules/qualify.js";
 import { notify } from "../../integrations/slack.js";
 import { logger } from "../../lib/logger.js";
+import { redesignProspect } from "../../modules/redesign.js";
 
 interface Opts extends FastifyPluginOptions {
   db: () => DbClient;
@@ -48,9 +51,15 @@ export async function queueRoutes(app: FastifyInstance, opts: Opts): Promise<voi
         city: prospects.city,
         redesignHtmlUrl: prospects.redesignHtmlUrl,
         linkedinUrl: prospects.linkedinUrl,
+        email: prospects.email,
+        contactFirstName: prospects.contactFirstName,
+        contactLastName: prospects.contactLastName,
+        contactTitle: prospects.contactTitle,
+        outreachChannel: campaigns.outreachChannel,
       })
       .from(triage)
       .innerJoin(prospects, eq(prospects.id, triage.prospectId))
+      .leftJoin(campaigns, eq(prospects.campaignId, campaigns.id))
       .where(eq(triage.status, "pending"))
       .orderBy(desc(triage.createdAt));
 
@@ -75,6 +84,10 @@ export async function queueRoutes(app: FastifyInstance, opts: Opts): Promise<voi
         screenshotUrl: prospects.screenshotUrl,
         redesignHtmlUrl: prospects.redesignHtmlUrl,
         linkedinUrl: prospects.linkedinUrl,
+        email: prospects.email,
+        contactFirstName: prospects.contactFirstName,
+        contactLastName: prospects.contactLastName,
+        contactTitle: prospects.contactTitle,
         qualificationIssues: prospects.qualificationIssues,
         qualificationScore: prospects.qualificationScore,
         qualificationReasoning: prospects.qualificationReasoning,
@@ -83,8 +96,10 @@ export async function queueRoutes(app: FastifyInstance, opts: Opts): Promise<voi
         variantLayout: prospects.variantLayout,
         redesignDeployedAt: prospects.redesignDeployedAt,
         updatedAt: prospects.updatedAt,
+        outreachChannel: campaigns.outreachChannel,
       })
       .from(prospects)
+      .leftJoin(campaigns, eq(prospects.campaignId, campaigns.id))
       .where(eq(prospects.state, "REDESIGNED"))
       .orderBy(desc(prospects.updatedAt))
       .limit(50);
@@ -111,10 +126,85 @@ export async function queueRoutes(app: FastifyInstance, opts: Opts): Promise<voi
         variantPalette: r.variantPalette,
         variantLayout: r.variantLayout,
         assetsSummary: { imageCount, hasLogo: !!assets?.logo, hasHero: !!(assets?.heroImage || assets?.heroVideo) },
+        email: r.email,
+        contactFirstName: r.contactFirstName,
+        contactLastName: r.contactLastName,
+        contactTitle: r.contactTitle,
+        outreachChannel: r.outreachChannel ?? "both",
       };
     });
 
-    return { items: [...reviewItems, ...items] };
+    const enrichedPendingRows = await db
+      .select({
+        id: prospects.id,
+        businessName: prospects.businessName,
+        niche: prospects.niche,
+        city: prospects.city,
+        website: prospects.website,
+        screenshotUrl: prospects.screenshotUrl,
+        linkedinUrl: prospects.linkedinUrl,
+        email: prospects.email,
+        contactFirstName: prospects.contactFirstName,
+        contactLastName: prospects.contactLastName,
+        contactTitle: prospects.contactTitle,
+        qualificationIssues: prospects.qualificationIssues,
+        qualificationScore: prospects.qualificationScore,
+        qualificationReasoning: prospects.qualificationReasoning,
+        scrapedAssets: prospects.scrapedAssets,
+        updatedAt: prospects.updatedAt,
+        outreachChannel: campaigns.outreachChannel,
+      })
+      .from(prospects)
+      .innerJoin(campaigns, eq(campaigns.id, prospects.campaignId))
+      .where(and(eq(prospects.state, "ENRICHED"), eq(campaigns.autoRedesignAfterEnrich, false)))
+      .orderBy(desc(prospects.updatedAt))
+      .limit(50);
+
+    const enrichedReviewItems = enrichedPendingRows.map((r) => {
+      const assets = (r.scrapedAssets as any) ?? null;
+      const imageCount = Array.isArray(assets?.images) ? assets.images.length : 0;
+      return {
+        type: "review_enriched" as const,
+        id: `enriched:${r.id}`,
+        prospectId: r.id,
+        status: "pending" as const,
+        createdAt: r.updatedAt,
+        businessName: r.businessName,
+        niche: r.niche,
+        city: r.city,
+        website: r.website,
+        screenshotUrl: r.screenshotUrl,
+        linkedinUrl: r.linkedinUrl,
+        qualificationIssues: sanitizeTopIssues(r.qualificationIssues),
+        qualificationScore: r.qualificationScore,
+        qualificationReasoning: r.qualificationReasoning,
+        assetsSummary: { imageCount, hasLogo: !!assets?.logo, hasHero: !!(assets?.heroImage || assets?.heroVideo) },
+        email: r.email,
+        contactFirstName: r.contactFirstName,
+        contactLastName: r.contactLastName,
+        contactTitle: r.contactTitle,
+        outreachChannel: r.outreachChannel ?? "both",
+      };
+    });
+
+    return { items: [...enrichedReviewItems, ...reviewItems, ...items] };
+  });
+
+  // Start redesign for ENRICHED prospect (manual gate when auto_redesign_after_enrich is false)
+  app.post<{ Params: { prospectId: string } }>("/enriched/:prospectId/start-redesign", async (req, reply) => {
+    const db = opts.db();
+    const [p] = await db.select().from(prospects).where(eq(prospects.id, req.params.prospectId));
+    if (!p) return reply.status(404).send({ error: "not_found" });
+    if (p.state !== "ENRICHED") {
+      return reply.status(400).send({ error: "not_enriched", state: p.state });
+    }
+    try {
+      await redesignProspect(db, p);
+    } catch (err) {
+      logger.error({ err: String(err), prospectId: p.id }, "manual start-redesign failed");
+      return reply.status(502).send({ error: "redesign_failed", detail: String(err) });
+    }
+    return { ok: true };
   });
 
   // Approve a redesign review card → APPROVED_TO_SEND

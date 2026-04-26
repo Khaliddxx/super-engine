@@ -4,8 +4,16 @@ import { requireAuth } from "../auth-guard.js";
 import { transition } from "../../modules/transitions.js";
 import { redesignProspect } from "../../modules/redesign.js";
 import { enrichProspect } from "../../modules/enrich.js";
-import { sendApprovedOutreachForProspect, draftInviteNote, draftInitialEmail } from "../../modules/send.js";
+import {
+  sendApprovedOutreachForProspect,
+  draftInviteNote,
+  draftInitialEmail,
+  sendEmailInitialForProspect,
+} from "../../modules/send.js";
 import { sanitizeTopIssues } from "../../modules/qualify.js";
+import { env } from "../../lib/env.js";
+import { patchRedesignNavbar } from "../../modules/redesign-patch.js";
+import { logger } from "../../lib/logger.js";
 
 /** Translate a `since` token like "today" | "7d" | "30d" | "all" into a Date threshold. */
 function resolveSince(token: string | undefined): Date | null {
@@ -56,6 +64,9 @@ export async function pipelineRoutes(app: FastifyInstance, opts: Opts): Promise<
         variantLayout: prospects.variantLayout,
         linkedinUrl: prospects.linkedinUrl,
         email: prospects.email,
+        contactFirstName: prospects.contactFirstName,
+        contactLastName: prospects.contactLastName,
+        contactTitle: prospects.contactTitle,
         screenshotUrl: prospects.screenshotUrl,
         campaignId: prospects.campaignId,
         createdAt: prospects.createdAt,
@@ -114,7 +125,20 @@ export async function pipelineRoutes(app: FastifyInstance, opts: Opts): Promise<
       ...p,
       qualificationIssues: sanitizeTopIssues(p.qualificationIssues as string[] | null | undefined),
     };
-    return { prospect: cleaned, campaign: c, deployments: depHistory };
+    const cfg = env();
+    const booking = (cfg.STUDIO_BOOKING_URL ?? "").trim();
+    const studioBookingUrl =
+      booking && /^https?:\/\//i.test(booking) ? booking : null;
+    const opEmail = (cfg.OPERATOR_EMAIL ?? "").trim();
+    const studioBookingMailto =
+      opEmail && opEmail.includes("@") ? `mailto:${opEmail}?subject=Book%20a%2015-min%20call` : null;
+    return {
+      prospect: cleaned,
+      campaign: c,
+      deployments: depHistory,
+      studioBookingUrl,
+      studioBookingMailto,
+    };
   });
 
   // Draft an invite note (Claude), return the message — operator can edit before sending
@@ -133,8 +157,32 @@ export async function pipelineRoutes(app: FastifyInstance, opts: Opts): Promise<
     const [p] = await db.select().from(prospects).where(eq(prospects.id, req.params.id));
     if (!p) return reply.status(404).send({ error: "not_found" });
     if (!p.email) return reply.status(400).send({ error: "no_email" });
-    if (!p.redesignHtmlUrl) return reply.status(400).send({ error: "no_redesign" });
+    if (!p.redesignHtmlUrl && !p.website) return reply.status(400).send({ error: "no_link_for_email_context" });
     return await draftInitialEmail(p);
+  });
+
+  app.post<{
+    Params: { id: string };
+    Body: { subject?: string; body?: string };
+  }>("/:id/send-email-now", async (req, reply) => {
+    const db = opts.db();
+    const [p] = await db.select().from(prospects).where(eq(prospects.id, req.params.id));
+    if (!p) return reply.status(404).send({ error: "not_found" });
+    if (!p.campaignId) return reply.status(400).send({ error: "no_campaign" });
+    const [c] = await db.select().from(campaigns).where(eq(campaigns.id, p.campaignId));
+    const channel = c?.outreachChannel ?? "both";
+    if (channel !== "email" && channel !== "both") {
+      return reply.status(400).send({ error: "email_channel_disabled", outreachChannel: channel });
+    }
+    if (!["ENRICHED", "REDESIGNED", "APPROVED_TO_SEND"].includes(p.state)) {
+      return reply.status(400).send({ error: "wrong_state", state: p.state });
+    }
+    if (!p.email) return reply.status(400).send({ error: "no_email" });
+    const result = await sendEmailInitialForProspect(db, p, {
+      approvedSubject: req.body?.subject,
+      approvedBody: req.body?.body,
+    });
+    return { ok: result.sent, send: result };
   });
 
   // Approve a redesign — moves to APPROVED_TO_SEND and (if provided) schedules/sends an invite
@@ -288,6 +336,42 @@ export async function pipelineRoutes(app: FastifyInstance, opts: Opts): Promise<
       return { ok: true };
     } catch (err) {
       return reply.status(502).send({ error: "redesign_failed", detail: String(err) });
+    }
+  });
+
+  app.post<{
+    Params: { id: string };
+    Body: { scope?: string; instruction?: string };
+  }>("/:id/redesign-html-patch", async (req, reply) => {
+    const db = opts.db();
+    const [p] = await db.select().from(prospects).where(eq(prospects.id, req.params.id));
+    if (!p) return reply.status(404).send({ error: "not_found" });
+    if (!p.redesignHtmlUrl) return reply.status(400).send({ error: "no_redesign" });
+    const scope = req.body?.scope ?? "navbar";
+    if (scope !== "navbar") return reply.status(400).send({ error: "unsupported_scope" });
+    const instruction = req.body?.instruction?.trim() ?? "";
+    if (!instruction) return reply.status(400).send({ error: "instruction_required" });
+    try {
+      const result = await patchRedesignNavbar(db, p, { scope: "navbar", instruction });
+      return { ok: true, url: result.url, warnings: result.warnings };
+    } catch (err) {
+      const msg = String(err);
+      if (msg.includes("instruction_required")) {
+        return reply.status(400).send({ error: "instruction_required" });
+      }
+      if (
+        msg.includes("no_redesign_url") ||
+        msg.includes("no_deployment") ||
+        msg.includes("index_html_missing") ||
+        msg.includes("missing_page:")
+      ) {
+        return reply.status(400).send({ error: "patch_precondition", detail: msg });
+      }
+      if (msg.includes("unsupported_scope")) {
+        return reply.status(400).send({ error: "unsupported_scope" });
+      }
+      logger.error({ err: msg, prospectId: p.id }, "redesign-html-patch failed");
+      return reply.status(502).send({ error: "patch_failed", detail: msg });
     }
   });
 

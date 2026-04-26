@@ -95,6 +95,7 @@ export async function enrichProspect(db: DbClient, prospect: Prospect): Promise<
     });
     const best = hunter ? pickBestEmail(hunter.emails) : null;
     const linkedinUrl = hunter ? pickLinkedInUrl(hunter, best) : null;
+    const identity = best ?? hunter?.emails?.[0];
 
     if (!best && !linkedinUrl) {
       throw new RejectProspectError("no_contact", "No email and no LinkedIn URL found");
@@ -109,6 +110,15 @@ export async function enrichProspect(db: DbClient, prospect: Prospect): Promise<
       patch: {
         email: best?.value ?? prospect.email,
         linkedinUrl: linkedinUrl ?? prospect.linkedinUrl,
+        contactFirstName: identity?.firstName ?? null,
+        contactLastName: identity?.lastName ?? null,
+        contactTitle: identity?.position ?? null,
+        contactEmailConfidence:
+          identity?.confidence != null && !Number.isNaN(Number(identity.confidence))
+            ? Math.round(Number(identity.confidence))
+            : null,
+        contactEmailType: identity?.type ?? null,
+        contactSource: hunter ? "hunter" : null,
         scrapedServices: services,
         scrapedCopy: heroCopy,
         scrapedAboutCopy: aboutCopy,

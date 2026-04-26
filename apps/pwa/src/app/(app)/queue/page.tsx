@@ -31,6 +31,11 @@ type TriageItem = {
   city: string | null;
   redesignHtmlUrl: string | null;
   linkedinUrl: string | null;
+  email: string | null;
+  contactFirstName: string | null;
+  contactLastName: string | null;
+  contactTitle: string | null;
+  outreachChannel: string | null;
 };
 
 type ReviewItem = {
@@ -52,9 +57,37 @@ type ReviewItem = {
   variantPalette: string | null;
   variantLayout: string | null;
   assetsSummary?: { imageCount: number; hasLogo: boolean; hasHero: boolean };
+  email: string | null;
+  contactFirstName: string | null;
+  contactLastName: string | null;
+  contactTitle: string | null;
+  outreachChannel: string;
 };
 
-type QueueItem = TriageItem | ReviewItem;
+type EnrichedReviewItem = {
+  type: "review_enriched";
+  id: string;
+  prospectId: string;
+  status: "pending";
+  createdAt: string;
+  businessName: string;
+  niche: string;
+  city: string | null;
+  website: string | null;
+  screenshotUrl: string | null;
+  linkedinUrl: string | null;
+  qualificationIssues: string[];
+  qualificationScore: string | null;
+  qualificationReasoning: string | null;
+  assetsSummary?: { imageCount: number; hasLogo: boolean; hasHero: boolean };
+  email: string | null;
+  contactFirstName: string | null;
+  contactLastName: string | null;
+  contactTitle: string | null;
+  outreachChannel: string;
+};
+
+type QueueItem = TriageItem | ReviewItem | EnrichedReviewItem;
 
 const CLASSIFICATION_META: Record<string, { label: string; icon: React.FC<any>; color: string }> = {
   booking: { label: "Booking", icon: Calendar, color: "text-green-400 bg-green-500/10 border-green-500/30" },
@@ -70,6 +103,24 @@ const KIND_META: Record<string, { label: string; icon: React.FC<any> }> = {
   first_dm_after_accept: { label: "First DM", icon: Rocket },
   reply: { label: "Reply", icon: MessageSquare },
 };
+
+function outreachLabel(ch?: string | null): string {
+  const c = ch ?? "both";
+  if (c === "both") return "LI + Email";
+  if (c === "email") return "Email";
+  return "LinkedIn";
+}
+
+function formatContact(
+  email: string | null,
+  first: string | null,
+  last: string | null,
+  title: string | null,
+): string | null {
+  const name = [first, last].filter(Boolean).join(" ").trim();
+  const bits = [name || null, title || null, email || null].filter(Boolean);
+  return bits.length ? bits.join(" · ") : null;
+}
 
 export default function QueuePage() {
   const qc = useQueryClient();
@@ -156,6 +207,24 @@ export default function QueuePage() {
     onError: (e: any) => toast.error(e.message ?? "Regenerate failed"),
   });
 
+  const startEnrichedRedesign = useMutation({
+    mutationFn: (prospectId: string) =>
+      api(`/api/queue/enriched/${prospectId}/start-redesign`, { method: "POST", body: {} }),
+    onMutate: (prospectId) => ({
+      previous: optimisticallyRemove((i) => i.type === "review_enriched" && i.prospectId === prospectId),
+    }),
+    onSuccess: () => {
+      toast.success("Generating preview — check back in ~1–2 min");
+      qc.invalidateQueries({ queryKey: ["queue"] });
+      qc.invalidateQueries({ queryKey: ["pipeline"] });
+    },
+    onError: (e: any, _vars, ctx: any) => {
+      if (ctx?.previous) qc.setQueryData(["queue"], ctx.previous);
+      toast.error(e.message ?? "Redesign failed");
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: ["queue"] }),
+  });
+
   const seedMutation = useMutation({
     mutationFn: () => api<{ created: number }>("/api/queue/seed-demo", { method: "POST", body: { count: 3 } }),
     onSuccess: (d) => {
@@ -166,7 +235,7 @@ export default function QueuePage() {
 
   const items = data?.items ?? [];
   const pending = items.filter((i) => i.status === "pending");
-  const reviewCount = pending.filter((i) => i.type === "review_redesign").length;
+  const reviewCount = pending.filter((i) => i.type === "review_redesign" || i.type === "review_enriched").length;
   const triageCount = pending.filter((i) => i.type === "triage").length;
 
   return (
@@ -226,7 +295,16 @@ export default function QueuePage() {
 
       <div className="space-y-3 pt-1">
         {pending.map((item) =>
-          item.type === "review_redesign" ? (
+          item.type === "review_enriched" ? (
+            <EnrichedReviewCard
+              key={item.id}
+              item={item}
+              onStartRedesign={() => startEnrichedRedesign.mutate(item.prospectId)}
+              isStarting={
+                startEnrichedRedesign.isPending && startEnrichedRedesign.variables === item.prospectId
+              }
+            />
+          ) : item.type === "review_redesign" ? (
             <ReviewCard
               key={item.id}
               item={item}
@@ -252,6 +330,126 @@ export default function QueuePage() {
 function microlinkShot(url: string): string {
   // Direct image endpoint that redirects to a fresh screenshot; survives re-renders.
   return `https://api.microlink.io/?url=${encodeURIComponent(url)}&screenshot=true&meta=false&embed=screenshot.url&viewport.width=414&viewport.height=320&waitFor=2500`;
+}
+
+function EnrichedReviewCard({
+  item,
+  onStartRedesign,
+  isStarting,
+}: {
+  item: EnrichedReviewItem;
+  onStartRedesign: () => void;
+  isStarting: boolean;
+}) {
+  const currentShot = item.screenshotUrl ?? (item.website ? microlinkShot(item.website) : null);
+  const issuesToShow = item.qualificationIssues ?? [];
+  const assetsOk = (item.assetsSummary?.imageCount ?? 0) >= 3;
+  let host = "";
+  try {
+    host = item.website ? new URL(item.website).hostname : "";
+  } catch {
+    host = item.website ?? "";
+  }
+
+  return (
+    <div className="card overflow-hidden">
+      <div className="flex items-start justify-between gap-3 px-4 pt-4">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="pill border border-blue-500/30 bg-blue-500/10 text-blue-300">
+              <Eye className="w-3 h-3" /> Ready for preview
+            </span>
+            <span className="pill border border-border text-muted bg-surface2 text-[10px]">
+              {outreachLabel(item.outreachChannel)}
+            </span>
+            {!assetsOk && (
+              <span
+                className="pill border border-amber-500/30 bg-amber-500/10 text-amber-300"
+                title="Fewer than 3 images extracted — you can still generate a preview"
+              >
+                <AlertTriangle className="w-3 h-3" /> thin assets
+              </span>
+            )}
+          </div>
+          <h3 className="mt-2 font-medium truncate">{item.businessName}</h3>
+          <p className="text-xs text-muted">
+            {item.niche}
+            {item.city ? ` · ${item.city}` : ""}
+          </p>
+          {formatContact(item.email, item.contactFirstName, item.contactLastName, item.contactTitle) && (
+            <p className="text-[11px] text-fg/80 mt-1 line-clamp-2">
+              {formatContact(item.email, item.contactFirstName, item.contactLastName, item.contactTitle)}
+            </p>
+          )}
+        </div>
+        <Link href={`/pipeline/${item.prospectId}`} className="btn-secondary px-3 py-2 text-xs shrink-0">
+          <Edit3 className="w-3.5 h-3.5" /> Details
+        </Link>
+      </div>
+
+      {issuesToShow.length > 0 && (
+        <div className="mx-4 mt-3 rounded-xl border border-border bg-surface2/50 p-3">
+          <p className="text-[11px] uppercase tracking-wider text-muted font-medium">Qualify notes</p>
+          <ul className="mt-1.5 text-[12.5px] text-fg/90 space-y-1">
+            {issuesToShow.map((iss, i) => (
+              <li key={i} className="flex gap-2">
+                <span className="text-accent shrink-0">·</span>
+                <span>{iss}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div className="px-4 pt-3">
+        <p className="text-[10px] uppercase tracking-wider text-muted mb-1">Current site</p>
+        <div className="aspect-[16/10] rounded-xl overflow-hidden bg-surface2 border border-border">
+          {currentShot ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={currentShot}
+              alt="current site"
+              className="w-full h-full object-cover object-top"
+              referrerPolicy="no-referrer"
+              onError={(e) => {
+                const el = e.currentTarget;
+                if (item.website && el.src !== microlinkShot(item.website)) {
+                  el.src = microlinkShot(item.website);
+                }
+              }}
+            />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center text-[11px] text-muted">no screenshot</div>
+          )}
+        </div>
+        {item.website && (
+          <a
+            href={item.website}
+            target="_blank"
+            rel="noreferrer"
+            className="text-[11px] text-muted hover:text-fg inline-flex items-center gap-1 mt-1"
+          >
+            {host} <ExternalLink className="w-3 h-3" />
+          </a>
+        )}
+      </div>
+
+      <div className="p-4 pt-3 space-y-2">
+        <button
+          type="button"
+          onClick={onStartRedesign}
+          disabled={isStarting}
+          className="btn-primary w-full text-sm"
+        >
+          <Sparkles className={`w-4 h-4 ${isStarting ? "animate-pulse" : ""}`} />
+          {isStarting ? "Starting redesign…" : "Generate preview (redesign)"}
+        </button>
+        <p className="text-[10px] text-muted text-center">
+          This campaign waits for your go-ahead before spending on the AI redesign.
+        </p>
+      </div>
+    </div>
+  );
 }
 
 function ReviewCard({
@@ -318,6 +516,9 @@ function ReviewCard({
               {item.variantLayout && (
                 <span className="pill border border-border text-muted bg-surface2">{item.variantLayout}</span>
               )}
+              <span className="pill border border-border text-muted bg-surface2 text-[10px]">
+                {outreachLabel(item.outreachChannel)}
+              </span>
               {!assetsOk && (
                 <span
                   className="pill border border-amber-500/30 bg-amber-500/10 text-amber-300"
@@ -332,6 +533,11 @@ function ReviewCard({
               {item.niche}
               {item.city ? ` · ${item.city}` : ""}
             </p>
+            {formatContact(item.email, item.contactFirstName, item.contactLastName, item.contactTitle) && (
+              <p className="text-[11px] text-fg/80 mt-1 line-clamp-2">
+                {formatContact(item.email, item.contactFirstName, item.contactLastName, item.contactTitle)}
+              </p>
+            )}
           </div>
           <Link
             href={`/pipeline/${item.prospectId}`}
@@ -519,6 +725,9 @@ function SwipeCard({
               <span className="pill border border-border text-muted">
                 <KindIcon className="w-3 h-3" /> {kindMeta.label}
               </span>
+              <span className="pill border border-border text-muted text-[10px]">
+                {outreachLabel(item.outreachChannel)}
+              </span>
               {confidence !== null && (
                 <span className="text-[11px] text-muted">{confidence}%</span>
               )}
@@ -528,6 +737,11 @@ function SwipeCard({
               {item.niche}
               {item.city ? ` · ${item.city}` : ""}
             </p>
+            {formatContact(item.email, item.contactFirstName, item.contactLastName, item.contactTitle) && (
+              <p className="text-[11px] text-fg/80 mt-1 line-clamp-2">
+                {formatContact(item.email, item.contactFirstName, item.contactLastName, item.contactTitle)}
+              </p>
+            )}
           </div>
           <Link
             href={`/queue/${item.id}`}

@@ -1,23 +1,35 @@
 import type { FastifyInstance, FastifyPluginOptions } from "fastify";
-import { desc, eq, gt, type DbClient, campaigns, marketScans } from "@super-engine/db";
+import { desc, eq, gt, type DbClient, campaigns, marketScans, operatorSettings } from "@super-engine/db";
 import { requireAuth } from "../auth-guard.js";
+import { env } from "../../lib/env.js";
 import {
   runMarketScout,
   CITY_SETS,
   NICHE_TICKET_WEIGHTS,
   SUPPORTED_COUNTRIES,
   normalizeCountry,
+  nicheGroupOf,
 } from "../../modules/market-scout.js";
 import {
-  diversifyByNiche,
+  diversifyByGroup,
   getFreshScoutRows,
   pickAndLaunch,
   pickAndLaunchCustom,
+  type OperatorIcpPrefs,
 } from "../../modules/market-launch.js";
+import { runAiMarketDiscover } from "../../modules/market-discover.js";
 import { triggerAutoScoutNow } from "../../cron.js";
 
 interface Opts extends FastifyPluginOptions {
   db: () => DbClient;
+}
+
+async function loadOperatorIcp(db: DbClient): Promise<OperatorIcpPrefs | null> {
+  const cfg = env();
+  const key = (cfg.OPERATOR_EMAIL || "operator@local").trim() || "operator@local";
+  const [s] = await db.select().from(operatorSettings).where(eq(operatorSettings.operatorEmail, key));
+  const prefs = s?.preferences as { icp?: OperatorIcpPrefs } | null | undefined;
+  return prefs?.icp ?? null;
 }
 
 function asCountry(input: string | undefined): string | null {
@@ -35,7 +47,7 @@ export async function scoutRoutes(app: FastifyInstance, opts: Opts): Promise<voi
   // about, so the PWA can render a real picker instead of a 4-country toggle.
   app.get("/catalog", async () => {
     const niches = Object.entries(NICHE_TICKET_WEIGHTS)
-      .map(([niche, weight]) => ({ niche, weight }))
+      .map(([niche, weight]) => ({ niche, weight, group: nicheGroupOf(niche) }))
       .sort((a, b) => b.weight - a.weight || a.niche.localeCompare(b.niche));
     const countries = SUPPORTED_COUNTRIES.map((c) => ({
       country: c,
@@ -98,6 +110,7 @@ export async function scoutRoutes(app: FastifyInstance, opts: Opts): Promise<voi
     const suggestedNiches = [...nicheMap.entries()]
       .map(([niche, v]) => ({
         niche,
+        group: nicheGroupOf(niche),
         samples: v.samples,
         avgScore: Math.round(v.avgScore * 10) / 10,
         avgNeed: Math.round(v.avgNeed * 100) / 100,
@@ -131,8 +144,9 @@ export async function scoutRoutes(app: FastifyInstance, opts: Opts): Promise<voi
     if (!country) return reply.status(400).send({ error: "unsupported_country", supported: SUPPORTED_COUNTRIES });
     const limit = Math.min(Number(req.query.limit ?? 12) || 12, 50);
     const diversify = req.query.diversify !== "false";
-    const { rows, totalCells, cacheHit } = await getFreshScoutRows(db, country);
-    const displayed = diversify ? diversifyByNiche(rows, 2) : rows;
+    const icp = await loadOperatorIcp(db);
+    const { rows, totalCells, cacheHit } = await getFreshScoutRows(db, country, { icp });
+    const displayed = diversify ? diversifyByGroup(rows, { perNiche: 2, perGroup: 3 }) : rows;
 
     const nicheSet = new Set(rows.map((r) => r.niche));
     const citySet = new Set(rows.map((r) => r.city));
@@ -145,9 +159,22 @@ export async function scoutRoutes(app: FastifyInstance, opts: Opts): Promise<voi
         nichesScanned: nicheSet.size,
         citiesScanned: citySet.size,
         cacheHit,
-        note: "Opportunity score factors in niche ticket size, median review volume, and pct of businesses with websites. Outdated-site filtering happens at scrape time, not here.",
+        note: "Score blends Places signals with pipeline outcomes when available. Outdated-site filtering also happens at scrape time.",
       },
     };
+  });
+
+  app.post<{ Body: { country?: string } }>("/discover", async (req, reply) => {
+    const db = opts.db();
+    const country = asCountry(req.body?.country);
+    if (!country) return reply.status(400).send({ error: "unsupported_country", supported: SUPPORTED_COUNTRIES });
+    try {
+      const icp = await loadOperatorIcp(db);
+      const result = await runAiMarketDiscover(db, { country, icp });
+      return result;
+    } catch (err) {
+      return reply.status(500).send({ error: String((err as Error).message) });
+    }
   });
 
   app.post<{ Body: { country?: string; maxCells?: number; niches?: string[]; cities?: string[] } }>("/run", async (req, reply) => {
@@ -160,13 +187,20 @@ export async function scoutRoutes(app: FastifyInstance, opts: Opts): Promise<voi
       niches: req.body?.niches,
       cities: req.body?.cities,
     });
-    const diversified = diversifyByNiche(rows, 2);
+    const diversified = diversifyByGroup(rows, { perNiche: 2, perGroup: 3 });
     return { items: diversified.slice(0, 30), total: rows.length };
   });
 
-  app.post<{ Body: { country?: string; rank?: number; maxProspects?: number } }>(
-    "/pick-and-launch",
-    async (req, reply) => {
+  app.post<{
+    Body: {
+      country?: string;
+      rank?: number;
+      maxProspects?: number;
+      niche?: string;
+      city?: string;
+      autoRedesignAfterEnrich?: boolean;
+    };
+  }>("/pick-and-launch", async (req, reply) => {
       const db = opts.db();
       try {
         const country = asCountry(req.body?.country);
@@ -175,6 +209,9 @@ export async function scoutRoutes(app: FastifyInstance, opts: Opts): Promise<voi
           country,
           rank: req.body?.rank,
           maxProspects: req.body?.maxProspects,
+          niche: req.body?.niche,
+          city: req.body?.city,
+          autoRedesignAfterEnrich: req.body?.autoRedesignAfterEnrich,
         });
         return {
           campaign: result.campaign,
@@ -201,7 +238,15 @@ export async function scoutRoutes(app: FastifyInstance, opts: Opts): Promise<voi
 
   // Custom launch — the operator picks niche + city directly. No ranking
   // dependency; the scrape's outdated-site filter still applies.
-  app.post<{ Body: { niche?: string; city?: string; country?: string; maxProspects?: number } }>(
+  app.post<{
+    Body: {
+      niche?: string;
+      city?: string;
+      country?: string;
+      maxProspects?: number;
+      autoRedesignAfterEnrich?: boolean;
+    };
+  }>(
     "/launch-custom",
     async (req, reply) => {
       const db = opts.db();
@@ -216,6 +261,7 @@ export async function scoutRoutes(app: FastifyInstance, opts: Opts): Promise<voi
           city: req.body.city,
           country,
           maxProspects: req.body.maxProspects ?? 25,
+          autoRedesignAfterEnrich: req.body?.autoRedesignAfterEnrich,
         });
         return result;
       } catch (err) {

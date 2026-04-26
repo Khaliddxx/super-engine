@@ -22,6 +22,18 @@ async function runStartupMigrations(): Promise<void> {
     await d.execute(rawSql`ALTER TABLE "prospects" ADD COLUMN IF NOT EXISTS "site_strength_score" numeric(4, 1)`);
     await d.execute(rawSql`ALTER TABLE "prospects" ADD COLUMN IF NOT EXISTS "site_strength_signals" jsonb`);
     await d.execute(rawSql`ALTER TABLE "prospects" ADD COLUMN IF NOT EXISTS "redesign_instruction" text`);
+    await d.execute(rawSql`ALTER TABLE "prospects" ADD COLUMN IF NOT EXISTS "contact_first_name" text`);
+    await d.execute(rawSql`ALTER TABLE "prospects" ADD COLUMN IF NOT EXISTS "contact_last_name" text`);
+    await d.execute(rawSql`ALTER TABLE "prospects" ADD COLUMN IF NOT EXISTS "contact_title" text`);
+    await d.execute(rawSql`ALTER TABLE "prospects" ADD COLUMN IF NOT EXISTS "contact_email_confidence" integer`);
+    await d.execute(rawSql`ALTER TABLE "prospects" ADD COLUMN IF NOT EXISTS "contact_email_type" text`);
+    await d.execute(rawSql`ALTER TABLE "prospects" ADD COLUMN IF NOT EXISTS "contact_source" text`);
+    await d.execute(rawSql`ALTER TABLE "market_scans" ADD COLUMN IF NOT EXISTS "outcome_score" numeric(4, 3)`);
+    await d.execute(rawSql`ALTER TABLE "market_scans" ADD COLUMN IF NOT EXISTS "source" varchar(24) DEFAULT 'scout'`);
+    await d.execute(rawSql`ALTER TABLE "operator_settings" ADD COLUMN IF NOT EXISTS "preferences" jsonb`);
+    await d.execute(
+      rawSql`UPDATE "campaigns" SET "outreach_channel" = 'both' WHERE "outreach_channel" = 'linkedin' AND "created_at" > NOW() - INTERVAL '60 days'`,
+    );
     logger.info("startup migrations applied");
   } catch (err) {
     logger.error({ err: String(err) }, "startup migrations failed");
