@@ -12,6 +12,7 @@ import { requireAuth } from "../auth-guard.js";
 import { sendChatMessage, startChat } from "../../integrations/unipile.js";
 import { env } from "../../lib/env.js";
 import { transition } from "../../modules/transitions.js";
+import { sanitizeTopIssues } from "../../modules/qualify.js";
 import { notify } from "../../integrations/slack.js";
 import { logger } from "../../lib/logger.js";
 
@@ -104,7 +105,7 @@ export async function queueRoutes(app: FastifyInstance, opts: Opts): Promise<voi
         screenshotUrl: r.screenshotUrl,
         redesignHtmlUrl: r.redesignHtmlUrl,
         linkedinUrl: r.linkedinUrl,
-        qualificationIssues: r.qualificationIssues ?? [],
+        qualificationIssues: sanitizeTopIssues(r.qualificationIssues),
         qualificationScore: r.qualificationScore,
         qualificationReasoning: r.qualificationReasoning,
         variantPalette: r.variantPalette,

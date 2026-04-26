@@ -13,6 +13,7 @@ import {
   pickAndLaunch,
   pickAndLaunchCustom,
 } from "../../modules/market-launch.js";
+import { triggerAutoScoutNow } from "../../cron.js";
 
 interface Opts extends FastifyPluginOptions {
   db: () => DbClient;
@@ -92,6 +93,18 @@ export async function scoutRoutes(app: FastifyInstance, opts: Opts): Promise<voi
     },
   );
 
+  // Manually trigger the daily auto-scout (which normally runs at 09:00 UTC).
+  // Walks all active campaigns and re-runs Places scrape, top-5 quietest first.
+  app.post("/auto-run-now", async (req, reply) => {
+    const db = opts.db();
+    try {
+      const result = await triggerAutoScoutNow(db);
+      return result;
+    } catch (err) {
+      return reply.status(500).send({ error: String((err as Error).message) });
+    }
+  });
+
   // Custom launch — the operator picks niche + city directly. No ranking
   // dependency; the scrape's outdated-site filter still applies.
   app.post<{ Body: { niche?: string; city?: string; country?: string; maxProspects?: number } }>(
@@ -106,7 +119,7 @@ export async function scoutRoutes(app: FastifyInstance, opts: Opts): Promise<voi
           niche: req.body.niche,
           city: req.body.city,
           country: req.body.country ?? "AU",
-          maxProspects: req.body.maxProspects ?? 10,
+          maxProspects: req.body.maxProspects ?? 25,
         });
         return result;
       } catch (err) {

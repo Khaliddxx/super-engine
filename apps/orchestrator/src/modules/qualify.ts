@@ -28,6 +28,48 @@ function hasChainName(name: string): boolean {
   return KNOWN_CHAINS.some((c) => n.includes(c));
 }
 
+/**
+ * Strip Claude's occasional "status tag" entries from top_issues so the
+ * operator only sees concrete, observable site problems on the queue card.
+ *
+ * top_issues are meant to answer "why is this site bad?" — they should NEVER
+ * contain rejection codes like `already_modern`, our pipeline jargon, or
+ * empty/marker strings.
+ */
+const STATUS_BLOCKLIST = [
+  "already_modern",
+  "site_already_strong",
+  "site_already_good",
+  "no_redesign_needed",
+  "low_review_count",
+  "franchise_risk",
+  "no_valid_index_page",
+  "screenshot_failed",
+];
+
+export function sanitizeTopIssues(items: readonly string[] | undefined | null): string[] {
+  if (!items) return [];
+  const seen = new Set<string>();
+  const cleaned: string[] = [];
+  for (const raw of items) {
+    if (typeof raw !== "string") continue;
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    const lower = trimmed.toLowerCase();
+    // Drop snake_case tokens: e.g. "already_modern" or "no_valid_index_page".
+    // A real, human-readable issue contains spaces; a status tag does not.
+    if (/^[a-z][a-z0-9_]*$/.test(lower) && lower.includes("_")) continue;
+    if (STATUS_BLOCKLIST.includes(lower)) continue;
+    // Drop our own pipeline commentary that leaked into top_issues.
+    if (lower.startsWith("site has ") && lower.includes("content pages")) continue;
+    if (lower.includes("we'll only redesign")) continue;
+    if (seen.has(lower)) continue;
+    seen.add(lower);
+    cleaned.push(trimmed);
+  }
+  return cleaned;
+}
+
 export async function qualifyProspect(db: DbClient, prospect: Prospect): Promise<void> {
   try {
     // Step 1: hard disqualifiers
@@ -73,6 +115,8 @@ export async function qualifyProspect(db: DbClient, prospect: Prospect): Promise
         "skipping: site already strong",
       );
       // Persist the signals before rejecting so the operator can see WHY.
+      // NOTE: qualificationIssues stays empty here — these are REJECTION
+      // reasons, not site issues. Reasons live in qualificationReasoning.
       await transition({
         db,
         prospectId: prospect.id,
@@ -82,7 +126,7 @@ export async function qualifyProspect(db: DbClient, prospect: Prospect): Promise
         patch: {
           rejectionReason: "site_already_strong",
           qualificationReasoning: strength.reasons.join("; "),
-          qualificationIssues: ["already_modern", ...strength.reasons],
+          qualificationIssues: [],
           siteStrengthScore: String(strength.score),
           siteStrengthSignals: strength.signals as any,
         },
@@ -127,14 +171,12 @@ export async function qualifyProspect(db: DbClient, prospect: Prospect): Promise
       );
     }
 
-    // Augment qualification issues with strength signals so the operator can
-    // see (in the queue card) WHY the AI flagged it + what the existing site has.
-    const enrichedIssues = [...parsed.top_issues];
-    if (strength && strength.signals.sitemapPageCount > 0) {
-      enrichedIssues.push(
-        `Site has ${strength.signals.contentPageCount} content pages (sitemap), we'll only redesign if it's thin.`,
-      );
-    }
+    // top_issues should be specific, observable site problems only — not
+    // pipeline metadata, not rejection codes. Drop anything that looks like a
+    // status tag (snake_case_token), anything containing words like
+    // "already_modern" or "no_redesign", and anything that's just our
+    // structural commentary.
+    const enrichedIssues = sanitizeTopIssues(parsed.top_issues);
 
     await transition({
       db,

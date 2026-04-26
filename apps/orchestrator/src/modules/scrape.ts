@@ -1,5 +1,5 @@
 import { campaigns, prospects, eq, and, type DbClient } from "@super-engine/db";
-import { textSearch } from "../integrations/places.js";
+import { textSearchMulti } from "../integrations/places.js";
 import { timezoneFor } from "../lib/time.js";
 import { logger } from "../lib/logger.js";
 import { analyzeSiteStrength, type SiteStrengthResult } from "./site-strength.js";
@@ -84,6 +84,40 @@ function extractDomain(url: string): string | null {
   }
 }
 
+/**
+ * Build a set of varied Places queries for one niche+city. Each variant pulls
+ * a different slice of Google's index, so combined dedupe gives us 4-6× the
+ * raw volume of a single "X in Y" search. This is the single biggest lever
+ * for scout volume — Places (New) caps each individual query at 60 results.
+ */
+export function buildSearchVariants(niche: string, city: string | null | undefined): string[] {
+  const c = (city ?? "").trim();
+  const n = niche.trim();
+  if (!c) return [n];
+  const base = [
+    `${n} in ${c}`,
+    `${c} ${n}`,
+    `best ${n} in ${c}`,
+    `top ${n} ${c}`,
+    `${n} near ${c}`,
+    `${n} ${c}`,
+  ];
+  // Some niches read better in plural — e.g. "law firms in Bangkok"
+  // out-of-the-box already, but "nightclub in Bangkok" misses "nightclubs".
+  const plural = n.endsWith("s") ? n : `${n}s`;
+  if (plural !== n) {
+    base.push(`${plural} in ${c}`, `${c} ${plural}`);
+  }
+  // Dedupe (case-insensitive) while keeping insertion order.
+  const seen = new Set<string>();
+  return base.filter((q) => {
+    const k = q.toLowerCase();
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
 export async function scrapeProspectsForCampaign(
   db: DbClient,
   campaignId: string,
@@ -92,15 +126,18 @@ export async function scrapeProspectsForCampaign(
   const [campaign] = await db.select().from(campaigns).where(eq(campaigns.id, campaignId));
   if (!campaign) throw new Error(`Campaign ${campaignId} not found`);
 
-  // We need MORE candidates than we want to keep, because we now filter for
-  // outdated sites client-side. Google Places returns the "best of the best"
-  // by default; most of those have decent websites and aren't real targets.
-  // Pull up to 20 (Places' hard cap), then filter down.
-  const desiredKeep = Math.min(opts.maxResults ?? campaign.maxProspects ?? 20, 20);
-  const placesLimit = 20;
-  const query = `${campaign.niche} in ${campaign.targetCity ?? ""}`.trim();
-  logger.info({ query, campaignId, desiredKeep }, "places textSearch");
-  const results = await textSearch(query, { max: placesLimit });
+  // We need WAY more candidates than we want to keep, because the
+  // outdated-site filter rejects 60-80% of what Places returns. Bumping the
+  // candidate pool is the cheapest way to raise yield.
+  // Hard cap of 50 keepers per scrape so a single search doesn't bloat the
+  // queue — anything more should come from another campaign or a new run.
+  const desiredKeep = Math.max(1, Math.min(opts.maxResults ?? campaign.maxProspects ?? 25, 50));
+  const queries = buildSearchVariants(campaign.niche, campaign.targetCity);
+  logger.info(
+    { queries, campaignId, desiredKeep, queryCount: queries.length },
+    "places textSearch (multi-query)",
+  );
+  const results = await textSearchMulti(queries, { maxPerQuery: 60, totalMax: 240 });
 
   const existingDomains = new Set<string>();
   const existingRows = await db.select({ website: prospects.website }).from(prospects);

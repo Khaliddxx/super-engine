@@ -5,6 +5,7 @@ import { transition } from "../../modules/transitions.js";
 import { redesignProspect } from "../../modules/redesign.js";
 import { enrichProspect } from "../../modules/enrich.js";
 import { sendLinkedInInviteForProspect, draftInviteNote } from "../../modules/send.js";
+import { sanitizeTopIssues } from "../../modules/qualify.js";
 
 /** Translate a `since` token like "today" | "7d" | "30d" | "all" into a Date threshold. */
 function resolveSince(token: string | undefined): Date | null {
@@ -64,7 +65,11 @@ export async function pipelineRoutes(app: FastifyInstance, opts: Opts): Promise<
       .where(filters.length ? and(...filters) : undefined)
       .orderBy(desc(prospects.updatedAt))
       .limit(200);
-    return { items: rows, since: since?.toISOString() ?? null };
+    const items = rows.map((r) => ({
+      ...r,
+      qualificationIssues: sanitizeTopIssues(r.qualificationIssues),
+    }));
+    return { items, since: since?.toISOString() ?? null };
   });
 
   app.get<{ Params: { id: string } }>("/:id", async (req, reply) => {
@@ -79,7 +84,11 @@ export async function pipelineRoutes(app: FastifyInstance, opts: Opts): Promise<
       .from(deployments)
       .where(eq(deployments.prospectId, p.id))
       .orderBy(desc(deployments.createdAt));
-    return { prospect: p, campaign: c, deployments: depHistory };
+    const cleaned = {
+      ...p,
+      qualificationIssues: sanitizeTopIssues(p.qualificationIssues as string[] | null | undefined),
+    };
+    return { prospect: cleaned, campaign: c, deployments: depHistory };
   });
 
   // Draft an invite note (Claude), return the message — operator can edit before sending

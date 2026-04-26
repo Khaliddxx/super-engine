@@ -3,7 +3,8 @@ import { logger } from "../lib/logger.js";
 
 export interface DeployResult {
   deploymentId: string;
-  url: string; // the aliased URL
+  projectId: string | null;
+  url: string;
 }
 
 function slugify(s: string): string {
@@ -21,38 +22,57 @@ function shortHash(id: string): string {
 }
 
 /**
- * Explicitly disable Vercel SSO / password protection on a project.
- * Previews must be publicly accessible — the whole point of the redesign
- * is that the prospect can click a link and see it.
+ * Explicitly disable Vercel SSO / password protection on a project so the
+ * preview is publicly accessible.
  *
- * Per Vercel API: PATCH /v9/projects/{projectId} with { ssoProtection: null,
- * passwordProtection: null, deploymentProtection: null }.
+ * Hobby teams ship with `ssoProtection: { deploymentType: "all_except_custom_domains" }`
+ * by default. We MUST clear it before exposing the URL or the prospect hits a
+ * Vercel auth wall.
+ *
+ * Retries up to 3x with exponential backoff. We always await this — racing the
+ * disable against the URL we return is what caused the auth wall in the past.
  */
-async function disableProjectProtection(projectId: string): Promise<void> {
+async function disableProjectProtection(projectId: string): Promise<boolean> {
   const cfg = env();
   const teamId = cfg.VERCEL_TEAM_ID;
   const qs = teamId ? `?teamId=${teamId}` : "";
-  try {
-    const res = await fetch(`https://api.vercel.com/v9/projects/${projectId}${qs}`, {
-      method: "PATCH",
-      headers: {
-        Authorization: `Bearer ${cfg.VERCEL_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        ssoProtection: null,
-        passwordProtection: null,
-        // Some API revs expose this as "deploymentProtection"; send both for safety.
-        deploymentProtection: null,
-      }),
-    });
-    if (!res.ok) {
-      const text = await res.text();
-      logger.warn({ projectId, status: res.status, text: text.slice(0, 300) }, "vercel disable protection failed");
+  const url = `https://api.vercel.com/v9/projects/${projectId}${qs}`;
+  // NOTE: only `ssoProtection` + `passwordProtection` are valid fields on
+  // PATCH /v9/projects. Sending `deploymentProtection` returns 400.
+  const body = JSON.stringify({
+    ssoProtection: null,
+    passwordProtection: null,
+  });
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await fetch(url, {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${cfg.VERCEL_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body,
+      });
+      if (res.ok) {
+        const json = (await res.json()) as { ssoProtection?: unknown; passwordProtection?: unknown };
+        if (!json.ssoProtection && !json.passwordProtection) {
+          return true;
+        }
+        logger.warn({ projectId, attempt, json }, "vercel disable: response says protection still active");
+      } else {
+        const text = await res.text();
+        logger.warn(
+          { projectId, attempt, status: res.status, text: text.slice(0, 240) },
+          "vercel disable failed",
+        );
+      }
+    } catch (err) {
+      logger.warn({ projectId, attempt, err: String(err) }, "vercel disable threw");
     }
-  } catch (err) {
-    logger.warn({ projectId, err: String(err) }, "vercel disable protection threw");
+    if (attempt < 3) await new Promise((r) => setTimeout(r, 500 * attempt));
   }
+  return false;
 }
 
 export interface StaticSiteFile {
@@ -70,7 +90,7 @@ export async function deployStaticSite(args: {
   if (args.files.length === 0) throw new Error("deployStaticSite: no files provided");
   const teamId = env().VERCEL_TEAM_ID;
   const qs = teamId ? `?teamId=${teamId}` : "";
-  const name = `${slugify(args.businessName)}-${shortHash(args.prospectId)}`;
+  const projectName = `${slugify(args.businessName)}-${shortHash(args.prospectId)}`;
 
   const files = args.files.map((f) => ({
     file: f.file,
@@ -85,7 +105,7 @@ export async function deployStaticSite(args: {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      name,
+      name: projectName,
       files,
       target: "production",
       projectSettings: { framework: null },
@@ -95,15 +115,33 @@ export async function deployStaticSite(args: {
     const text = await res.text();
     throw new Error(`Vercel deploy failed: ${res.status} ${text}`);
   }
-  const json = (await res.json()) as { id: string; url: string; alias?: string[]; projectId?: string };
-  const url = json.alias?.[0] ?? json.url;
+  const json = (await res.json()) as {
+    id: string;
+    url: string;
+    alias?: string[];
+    projectId?: string;
+  };
 
-  // Fire-and-forget: make the project publicly viewable.
-  if (json.projectId) {
-    void disableProjectProtection(json.projectId);
+  // Synchronously make the project publicly viewable BEFORE we return the URL.
+  // This eliminates the race where the operator (or prospect) hits the URL
+  // before our fire-and-forget disable lands.
+  const projectId = json.projectId ?? null;
+  if (projectId) {
+    const ok = await disableProjectProtection(projectId);
+    if (!ok) {
+      logger.error({ projectId, projectName }, "could not disable vercel protection — preview will hit auth wall");
+    }
   }
 
-  return { deploymentId: json.id, url: `https://${url}` };
+  // Prefer the clean production alias `<project>.vercel.app` over the
+  // deployment hash + team-slug URL. Both exist in `automaticAliases` /
+  // `targets.production.alias`, but the cleanest is just the project name.
+  // Vercel auto-resolves `https://<project>.vercel.app` to the latest
+  // production deployment for that project, so this URL stays valid even on
+  // re-deploys.
+  const cleanUrl = `https://${projectName}.vercel.app`;
+
+  return { deploymentId: json.id, projectId, url: cleanUrl };
 }
 
 /** @deprecated Use {@link deployStaticSite} instead. Kept for backwards-compat callers. */

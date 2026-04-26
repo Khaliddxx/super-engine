@@ -85,11 +85,30 @@ export default function MarketsPage() {
     onError: (e: any) => toast.error(e.message ?? "Scan failed"),
   });
 
+  const drip = useMutation({
+    mutationFn: () =>
+      api<{ scrapedCampaigns?: number; totalNew?: number; skipped?: boolean }>(
+        "/api/scout/auto-run-now",
+        { method: "POST" },
+      ),
+    onSuccess: (d) => {
+      if (d.skipped) {
+        toast.info("Auto-scout already running — try again in a minute");
+      } else {
+        toast.success(
+          `Topped up ${d.scrapedCampaigns ?? 0} campaigns · ${d.totalNew ?? 0} new prospects`,
+        );
+        qc.invalidateQueries({ queryKey: ["pipeline"] });
+      }
+    },
+    onError: (e: any) => toast.error(e.message ?? "Auto-scout failed"),
+  });
+
   const launch = useMutation({
     mutationFn: (rank: number) =>
       api<LaunchResponse>("/api/scout/pick-and-launch", {
         method: "POST",
-        body: { country, rank, maxProspects: 10 },
+        body: { country, rank, maxProspects: 25 },
       }),
     onSuccess: (d) => {
       const skipped =
@@ -110,7 +129,7 @@ export default function MarketsPage() {
     mutationFn: () =>
       api<LaunchResponse>("/api/scout/launch-custom", {
         method: "POST",
-        body: { country, niche: customNiche.trim().toLowerCase(), city: customCity.trim(), maxProspects: 10 },
+        body: { country, niche: customNiche.trim().toLowerCase(), city: customCity.trim(), maxProspects: 25 },
       }),
     onSuccess: (d) => {
       const skipped =
@@ -129,7 +148,7 @@ export default function MarketsPage() {
 
   const items = scoutQ.data?.items ?? [];
   const meta = scoutQ.data?.meta;
-  const isBusy = refresh.isPending || launch.isPending || launchCustom.isPending;
+  const isBusy = refresh.isPending || launch.isPending || launchCustom.isPending || drip.isPending;
 
   const citiesForCountry = useMemo(
     () => catalogQ.data?.countries.find((c) => c.country === country)?.cities ?? [],
@@ -231,6 +250,24 @@ export default function MarketsPage() {
           </div>
         )}
       </div>
+
+      <button
+        disabled={drip.isPending}
+        onClick={() => drip.mutate()}
+        className="card p-3 w-full flex items-center gap-3 hover:border-accent/40 transition"
+      >
+        <div className="rounded-xl bg-accent/10 border border-accent/30 p-2 text-accent shrink-0">
+          <RefreshCw className={`w-4 h-4 ${drip.isPending ? "animate-spin" : ""}`} />
+        </div>
+        <div className="text-left min-w-0 flex-1">
+          <p className="text-sm font-medium truncate">
+            {drip.isPending ? "Topping up…" : "Drip more from active campaigns"}
+          </p>
+          <p className="text-[11px] text-muted truncate">
+            Re-runs Places on your active niches/cities — picks up new prospects without launching anything new. Auto-runs daily at 09:00 UTC.
+          </p>
+        </div>
+      </button>
 
       <div className="flex items-center justify-between px-1">
         <h2 className="text-sm font-medium text-muted">Top opportunities</h2>

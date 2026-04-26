@@ -86,7 +86,9 @@ export async function pickAndLaunch(
 ): Promise<LaunchResult> {
   const country = (opts.country ?? "AU").toUpperCase();
   const rank = Math.max(1, opts.rank ?? 1);
-  const maxProspects = Math.max(1, Math.min(opts.maxProspects ?? 10, 20));
+  // Cap raised: scrape now multi-queries Places and pulls ~3-5× more raw
+  // candidates per campaign, so we can keep more without burning extra ops.
+  const maxProspects = Math.max(1, Math.min(opts.maxProspects ?? 25, 50));
 
   const { rows } = await getFreshScoutRows(db, country);
   const diversified = diversifyByNiche(rows, 2);
@@ -135,7 +137,7 @@ export async function pickAndLaunchCustom(
   const niche = opts.niche.trim().toLowerCase();
   const city = opts.city.trim();
   const country = opts.country.toUpperCase().slice(0, 2);
-  const maxProspects = Math.max(1, Math.min(opts.maxProspects ?? 10, 20));
+  const maxProspects = Math.max(1, Math.min(opts.maxProspects ?? 25, 50));
 
   if (!niche || !city) throw new Error("niche and city required");
 

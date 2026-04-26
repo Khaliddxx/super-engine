@@ -8,7 +8,7 @@ export interface QualifyInput {
 }
 
 export const QUALIFY_PROMPT_V1 = {
-  version: "1.1",
+  version: "1.2",
   deployedAt: "2026-04-26",
   render: (i: QualifyInput) => `You are evaluating whether a local business website would benefit from a modern redesign.
 You'll be shown a screenshot of the current website homepage.
@@ -46,7 +46,22 @@ A site qualifies for redesign outreach if:
 - AND the site is NOT already modern per the <context> above
 
 If you see clear signs of a modern booking engine, virtual tour, current copyright year, or a polished identity,
-set pass=false and include "already_modern" as the first item in top_issues, even if one dimension scores low.
+set pass=false. Explain WHY in "reasoning" — DO NOT use top_issues for rejection codes.
+
+CRITICAL — what goes in top_issues:
+top_issues are concrete, observable problems on the rendered page, things a human visitor
+would notice and complain about. They MUST be short, plain-English, site-specific.
+GOOD examples:
+  "Menu items overflow on mobile, you have to scroll sideways"
+  "Hero image is a stock photo of a generic skyline"
+  "Phone number isn't clickable"
+  "Body copy is grey on white at ~12px, hard to read"
+BAD examples (NEVER use these):
+  "already_modern", "site_already_strong", "no_redesign_needed", "low_review_count",
+  any other snake_case status tag, or any reason about why we should skip this lead.
+
+If the site is already strong and you're returning pass=false, return an EMPTY top_issues
+array and put your reasoning in "reasoning".
 
 Return JSON ONLY (no prose, no markdown fences):
 {
